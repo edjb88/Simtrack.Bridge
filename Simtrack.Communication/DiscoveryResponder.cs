@@ -157,20 +157,22 @@ public sealed class DiscoveryResponder : IDisposable
 
     private async Task BeaconAsync(UdpClient client, CancellationToken cancellationToken)
     {
-        var targets = new List<IPAddress> { IPAddress.Broadcast };
-
-        foreach (IPAddress broadcast in BroadcastAddresses())
-        {
-            if (!targets.Contains(broadcast))
-                targets.Add(broadcast);
-        }
-
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
 
         try
         {
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
+                // Se recalculan en cada vuelta: la Wi-Fi o el cable del iPhone
+                // pueden aparecer después de arrancar la app.
+                var targets = new List<IPAddress> { IPAddress.Broadcast };
+
+                foreach (IPAddress broadcast in BroadcastAddresses())
+                {
+                    if (!targets.Contains(broadcast))
+                        targets.Add(broadcast);
+                }
+
                 byte[] payload = Encoding.UTF8.GetBytes(BuildPayload("bridge.beacon"));
 
                 foreach (IPAddress target in targets)
