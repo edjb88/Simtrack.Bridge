@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using Simtrack.Core.Tracking;
@@ -20,6 +21,13 @@ public sealed class FreeTrackWriter : IDisposable
 
     private long _writeCount;
     private DateTime _lastWriteAt = DateTime.MinValue;
+
+    /// <summary>
+    /// Búfer con el que se escribe el bloque. Se reutiliza para no asignar
+    /// memoria ni pasar por el marshaling de estructuras en cada escritura
+    /// (a 250 Hz se nota).
+    /// </summary>
+    private readonly byte[] _buffer = new byte[FreeTrackLayout.HeapSize];
 
     public bool IsOpen
     {
@@ -78,29 +86,29 @@ public sealed class FreeTrackWriter : IDisposable
     {
         MemoryMappedViewAccessor view = _view!;
 
-        var heap = new FTHeap
-        {
-            Data = new FTData
-            {
-                DataID = 1,
-                CamWidth = CamWidth,
-                CamHeight = CamHeight,
-                Yaw = (float)pose.Yaw,
-                Pitch = (float)pose.Pitch,
-                Roll = (float)pose.Roll,
-                X = (float)pose.X,
-                Y = (float)pose.Y,
-                Z = (float)pose.Z,
-                RawYaw = (float)pose.Yaw,
-                RawPitch = (float)pose.Pitch,
-                RawRoll = (float)pose.Roll,
-                RawX = (float)pose.X,
-                RawY = (float)pose.Y,
-                RawZ = (float)pose.Z
-            },
-            GameID = 0,
-            GameID2 = 0
-        };
+        byte[] buffer = _buffer;
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0, 4), 1);          // DataID
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(4, 4), CamWidth);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(8, 4), CamHeight);
+
+        WriteSingle(buffer, 12, pose.Yaw);      // Yaw
+        WriteSingle(buffer, 16, pose.Pitch);    // Pitch
+        WriteSingle(buffer, 20, pose.Roll);     // Roll
+        WriteSingle(buffer, 24, pose.X);
+        WriteSingle(buffer, 28, pose.Y);
+        WriteSingle(buffer, 32, pose.Z);
+
+        // Pose "raw" (sin suavizar): mismos valores, la mayoría de juegos la ignora.
+        WriteSingle(buffer, 36, pose.Yaw);
+        WriteSingle(buffer, 40, pose.Pitch);
+        WriteSingle(buffer, 44, pose.Roll);
+        WriteSingle(buffer, 48, pose.X);
+        WriteSingle(buffer, 52, pose.Y);
+        WriteSingle(buffer, 56, pose.Z);
+
+        // A partir de aquí: puntos IR (60..92), GameID, tabla y GameID2 (92..108).
+        // Se quedan a cero; no hace falta reescribirlos en cada iteración.
 
         bool locked = false;
 
@@ -118,13 +126,10 @@ public sealed class FreeTrackWriter : IDisposable
 
         try
         {
-            view.Write(0, ref heap);
+            view.WriteArray(0, buffer, 0, buffer.Length);
             Interlocked.Increment(ref _writeCount);
 
-            lock (_gate)
-            {
-                _lastWriteAt = DateTime.UtcNow;
-            }
+            _lastWriteAt = DateTime.UtcNow;
         }
         finally
         {
@@ -139,6 +144,11 @@ public sealed class FreeTrackWriter : IDisposable
                 }
             }
         }
+    }
+
+    private static void WriteSingle(byte[] buffer, int offset, double value)
+    {
+        BinaryPrimitives.WriteSingleLittleEndian(buffer.AsSpan(offset, 4), (float)value);
     }
 
     /// <summary>Lee el bloque actual (para mostrar la pose que ve el juego / depurar).</summary>
