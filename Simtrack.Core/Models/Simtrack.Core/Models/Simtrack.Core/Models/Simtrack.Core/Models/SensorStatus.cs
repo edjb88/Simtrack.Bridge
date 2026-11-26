@@ -1,0 +1,13 @@
+﻿
+namespace Simtrack.Core.Models;
+
+public sealed class SensorStatus
+{
+    public bool Connected { get; set; }
+    public string DeviceName { get; set; } = "No conectado";
+    public bool ImuAvailable { get; set; }
+
+    public double SampleRateHz { get; set; }
+
+    public DateTime? LastUpdate { get; set; }
+}

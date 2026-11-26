@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="Simtrack.App/Simtrack.App.csproj" />
+  <Project Path="Simtrack.Bluetooth/Simtrack.Bluetooth.csproj" />
+  <Project Path="Simtrack.Communication/Simtrack.Communication.csproj" />
+  <Project Path="Simtrack.Core/Simtrack.Core.csproj" />
+  <Project Path="Simtrack.Output/Simtrack.Output.csproj" />
+</Solution>

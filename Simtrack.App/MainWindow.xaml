@@ -1,0 +1,167 @@
+<Window x:Class="Simtrack.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Simtrack Windows"
+        Height="760"
+        Width="1100"
+        MinHeight="650"
+        MinWidth="900"
+        WindowStartupLocation="CenterScreen"
+        Background="#10141C">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="PanelBrush" Color="#1B2330"/>
+        <SolidColorBrush x:Key="AccentBrush" Color="#39D98A"/>
+        <SolidColorBrush x:Key="MutedBrush" Color="#91A0B5"/>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#F1F5F9"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+        </Style>
+
+        <Style x:Key="PanelStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="18"/>
+            <Setter Property="Margin" Value="6"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="170"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="6,0,6,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel>
+                <TextBlock Text="SIMTRACK" FontSize="30" FontWeight="Bold" Foreground="#39D98A"/>
+                <TextBlock Text="Windows Tracking Engine" FontSize="13" Foreground="#91A0B5"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
+                <Ellipse x:Name="ConnectionIndicator" Width="12" Height="12" Fill="#E05252" Margin="0,0,8,0"/>
+                <TextBlock x:Name="ConnectionText" Text="ESPERANDO IPHONE" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource PanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="IPHONE / TRUEDEPTH" Foreground="#91A0B5" FontSize="12" FontWeight="Bold"/>
+                    <TextBlock x:Name="IphoneStatus" Text="Sin conexión" FontSize="19" FontWeight="SemiBold" Margin="0,10,0,4"/>
+                    <TextBlock x:Name="IphoneAddress" Text="IP: desconocida" Foreground="#91A0B5"/>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="1" Style="{StaticResource PanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="AURICULARES / IMU" Foreground="#91A0B5" FontSize="12" FontWeight="Bold"/>
+                    <TextBlock x:Name="HeadphonesStatus" Text="No conectado" FontSize="19" FontWeight="SemiBold" Margin="0,10,0,4"/>
+                    <TextBlock x:Name="HeadphonesDetail" Text="Esperando dispositivo" Foreground="#91A0B5"/>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource PanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="RECEPCIÓN UDP" Foreground="#91A0B5" FontSize="12" FontWeight="Bold"/>
+                    <TextBlock x:Name="PacketCount" Text="0" FontSize="28" FontWeight="Bold" Foreground="#39D98A" Margin="0,4,0,0"/>
+                    <TextBlock Text="Paquetes recibidos" Foreground="#91A0B5"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.2*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource PanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="POSE RECIBIDA DEL IPHONE" FontSize="14" FontWeight="Bold" Foreground="#39D98A" Margin="0,0,0,18"/>
+                    <TextBlock Text="POSICIÓN" Foreground="#91A0B5" FontWeight="Bold"/>
+
+                    <Grid Margin="0,10,0,24">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel>
+                            <TextBlock Text="X" Foreground="#91A0B5"/>
+                            <TextBlock x:Name="ValueX" Text="0.00 cm" FontSize="22"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="Y" Foreground="#91A0B5"/>
+                            <TextBlock x:Name="ValueY" Text="0.00 cm" FontSize="22"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Z" Foreground="#91A0B5"/>
+                            <TextBlock x:Name="ValueZ" Text="0.00 cm" FontSize="22"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Text="ROTACIÓN" Foreground="#91A0B5" FontWeight="Bold"/>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel>
+                            <TextBlock Text="YAW" Foreground="#91A0B5"/>
+                            <TextBlock x:Name="ValueYaw" Text="0.00°" FontSize="22"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="PITCH" Foreground="#91A0B5"/>
+                            <TextBlock x:Name="ValuePitch" Text="0.00°" FontSize="22"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="ROLL" Foreground="#91A0B5"/>
+                            <TextBlock x:Name="ValueRoll" Text="0.00°" FontSize="22"/>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="1" Style="{StaticResource PanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="MOTOR DE TRACKING" FontSize="14" FontWeight="Bold" Foreground="#39D98A" Margin="0,0,0,18"/>
+                    <TextBlock Text="FUSIÓN DE SENSORES" Foreground="#91A0B5" FontWeight="Bold"/>
+                    <TextBlock Text="Pendiente de implementar" FontSize="16" Margin="0,6,0,18"/>
+                    <TextBlock Text="SALIDA" Foreground="#91A0B5" FontWeight="Bold"/>
+                    <TextBlock Text="OpenTrack: pendiente" Margin="0,6,0,6"/>
+                    <TextBlock Text="Salida directa: pendiente"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="3" Style="{StaticResource PanelStyle}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Text="REGISTRO DEL SISTEMA" Foreground="#39D98A" FontWeight="Bold" Margin="0,0,0,10"/>
+                <ListBox x:Name="LogList" Grid.Row="1" Background="#111925" Foreground="#D7E0EA" BorderThickness="0" FontFamily="Consolas" FontSize="11"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
