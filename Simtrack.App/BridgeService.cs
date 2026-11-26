@@ -24,6 +24,7 @@ public sealed class BridgeService : IDisposable
     private readonly PoseFusion _fusion = new();
     private readonly FreeTrackWriter _writer = new();
     private readonly TelemetrySender _telemetry = new();
+    private readonly DiscoveryResponder _discovery = new();
 
     private readonly SensorStatus _headphones = new()
     {
@@ -86,6 +87,9 @@ public sealed class BridgeService : IDisposable
         _receiver.PoseReceived += OnPoseReceived;
         _receiver.RecenterRequested += OnRecenterRequested;
 
+        _discovery.LogReceived += OnReceiverLog;
+        _discovery.SimHubPort = DetectSimHubPort();
+
         try
         {
             _writer.Open();
@@ -93,13 +97,15 @@ public sealed class BridgeService : IDisposable
                 $"({FreeTrackLayout.HeapSize} bytes, FTData {FreeTrackLayout.DataSize} bytes).");
 
             _receiver.Start();
+            _discovery.Start();
         }
         catch (Exception ex)
         {
             Log($"ERROR al arrancar: {ex.Message}");
 
+            _discovery.Stop();
             _writer.Close();
-            DetachReceiver();
+            DetachHandlers();
 
             throw;
         }
@@ -120,9 +126,6 @@ public sealed class BridgeService : IDisposable
         _cancellation = null;
         _loopTask = null;
 
-        if (cancellation is null && loop is null)
-            return;
-
         cancellation?.Cancel();
 
         try
@@ -135,7 +138,8 @@ public sealed class BridgeService : IDisposable
 
         cancellation?.Dispose();
 
-        DetachReceiver();
+        _discovery.Stop();
+        DetachHandlers();
         _receiver.Stop();
 
         _writer.Close();
@@ -156,11 +160,42 @@ public sealed class BridgeService : IDisposable
             $"Roll {pose.Roll * 180 / Math.PI:F1}°.");
     }
 
-    private void DetachReceiver()
+    private void DetachHandlers()
     {
         _receiver.LogReceived -= OnReceiverLog;
         _receiver.PoseReceived -= OnPoseReceived;
         _receiver.RecenterRequested -= OnRecenterRequested;
+        _discovery.LogReceived -= OnReceiverLog;
+    }
+
+    /// <summary>
+    /// Puerto de SimHub para el dashboard del iPhone: 8888 si está escuchando,
+    /// si no el primer puerto razonable de su rango.
+    /// </summary>
+    private static int DetectSimHubPort()
+    {
+        try
+        {
+            var listeners = System.Net.NetworkInformation.IPGlobalProperties
+                .GetIPGlobalProperties()
+                .GetActiveTcpListeners();
+
+            if (listeners.Any(l => l.Port == 8888))
+                return 8888;
+
+            int port = listeners
+                .Where(l => l.Port is >= 8000 and <= 9000)
+                .Select(l => l.Port)
+                .Distinct()
+                .OrderBy(p => p)
+                .FirstOrDefault();
+
+            return port == 0 ? 8888 : port;
+        }
+        catch
+        {
+            return 8888;
+        }
     }
 
     private void OnReceiverLog(string message)

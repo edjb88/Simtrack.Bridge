@@ -34,9 +34,9 @@ else {
     Write-Host 'Ejecuta tools\Allow-Firewall.ps1 como administrador.' -ForegroundColor Yellow
 }
 
-Write-Host '=== 3. Puertos UDP 4242/4243/4244 ===' -ForegroundColor Cyan
+Write-Host '=== 3. Puertos UDP 4242/4243/4244/4245 ===' -ForegroundColor Cyan
 Get-NetUDPEndpoint -ErrorAction SilentlyContinue |
-    Where-Object { $_.LocalPort -in 4242, 4243, 4244 } |
+    Where-Object { $_.LocalPort -in 4242, 4243, 4244, 4245 } |
     Select-Object LocalAddress, LocalPort, OwningProcess | Format-Table -AutoSize
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,11 @@ Write-Host ''
 
 try {
     pktmon filter remove | Out-Null
-    pktmon filter add -n simtrack -p 4242 -t UDP | Out-Null
+    pktmon filter add -p 4242 -t UDP | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'Aviso: no se pudo filtrar solo el 4242; se captura todo el tráfico.' -ForegroundColor Yellow
+    }
 
     pktmon start --capture --comp nics --pkt-size 128 -f $etl | Out-Null
 

@@ -15,7 +15,8 @@ $ErrorActionPreference = 'Stop'
 
 $rules = @(
     @{ Name = 'Simtrack Bridge - UDP 4242 (tracking)'; Port = 4242 },
-    @{ Name = 'Simtrack Bridge - UDP 4243 (control)';  Port = 4243 }
+    @{ Name = 'Simtrack Bridge - UDP 4243 (control)';  Port = 4243 },
+    @{ Name = 'Simtrack Bridge - UDP 4245 (descubrimiento)'; Port = 4245 }
 )
 
 foreach ($rule in $rules) {

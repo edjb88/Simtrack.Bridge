@@ -97,6 +97,26 @@ comprobar IP, que los dos estén en la misma red y las reglas del firewall.
 3. Si la cámara se mueve al revés, ajustar las inversiones en
    `Simtrack.Core/Tracking/PoseFusion.cs` (`PoseSettings`).
 
+## Descubrimiento automático del PC (IP dinámica)
+
+El router asigna IPs nuevas al reiniciar, así que la app del iPhone **ya no
+lleva la IP escrita a mano**: al arrancar, el móvil pregunta por UDP al puerto
+`4245` y el PC responde con su IP real, el puerto de tracking y el de SimHub.
+
+```
+iPhone  → broadcast UDP 4245  {"type":"bridge.discover"}
+PC      → respuesta UDP       {"type":"bridge.reply", "trackingPort":4242,
+                               "simhubPort":8888, ...}
+```
+
+El móvil usa la IP de origen de la respuesta, así que funciona igual por Wi-Fi
+que por el cable del iPhone (tethering USB), aunque el PC tenga las dos
+direcciones a la vez. El dashboard también se carga contra la IP descubierta.
+
+Si el PC no aparece, la app usa la IP de respaldo compilada
+(`SimtrackNetwork.pcIP`). El descubrimiento necesita el puerto UDP **4245**
+abierto en el firewall (lo añade `tools/Allow-Firewall.ps1`).
+
 ## Ajustar ejes y suavizado sin recompilar
 
 Junto al `.exe` se genera `simtrack.settings.json`
