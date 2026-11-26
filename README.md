@@ -140,6 +140,29 @@ Junto al `.exe` se genera `simtrack.settings.json`
   directo y nervioso. Valores entre 0.05 y 0.4 tienen sentido.
 - Guardar el archivo y reiniciar la app para aplicar los cambios.
 
+## Crear la beta para otro PC
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\Publish-Beta.ps1
+```
+
+Genera en `dist\`:
+
+- `Simtrack.Bridge-0.9.0-beta-win-x64\` → carpeta lista para ejecutar.
+- `Simtrack.Bridge-0.9.0-beta-win-x64.zip` → lo que se copia al otro PC.
+
+El ejecutable es **self-contained** (no hace falta instalar .NET en el otro
+equipo) y va acompañado de `Permitir-Firewall.cmd`, `Diagnostico-Red.ps1`,
+`simtrack.settings.json` y `LEEME.txt`.
+
+En el PC nuevo:
+
+1. Copiar y descomprimir la carpeta.
+2. Ejecutar `Permitir-Firewall.cmd` (acepta el aviso de administrador).
+3. Ejecutar `Simtrack.App.exe` (SmartScreen → "Más información" → "Ejecutar
+   de todas formas").
+4. Abrir la app del iPhone en la pestaña Tracking: se encuentran solos.
+
 ## Estructura
 
 | Proyecto | Contenido |
