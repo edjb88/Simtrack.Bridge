@@ -3,11 +3,11 @@
 #   powershell -ExecutionPolicy Bypass -File .\tools\Publish-Beta.ps1
 #
 # Genera en dist\ :
-#   Simtrack.Bridge-0.9.0-beta-win-x64\        (carpeta lista para ejecutar)
-#   Simtrack.Bridge-0.9.0-beta-win-x64.zip     (lo que se copia al otro PC)
+#   Simtrack.Bridge-0.9.1-beta-win-x64\        (carpeta lista para ejecutar)
+#   Simtrack.Bridge-0.9.1-beta-win-x64.zip     (lo que se copia al otro PC)
 
 param(
-    [string]$Version = '0.9.0-beta',
+    [string]$Version = '0.9.1-beta',
     [string]$Runtime = 'win-x64'
 )
 
@@ -63,6 +63,14 @@ pause
 '@
 Set-Content -Path (Join-Path $target 'Permitir-Firewall.cmd') -Value $cmd -Encoding ASCII
 
+$diag = @'
+@echo off
+powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"%~dp0Diagnostico-Red.ps1\"'"
+echo Cuando termine, el resultado estara en diagnostico.txt (en esta carpeta).
+pause
+'@
+Set-Content -Path (Join-Path $target 'Diagnostico.cmd') -Value $diag -Encoding ASCII
+
 $leeme = @"
 SIMTRACK BRIDGE $Version  ($Runtime)
 ========================================
@@ -78,7 +86,7 @@ Puesta en marcha en este PC (5 minutos)
      (Sin esto Windows bloquea los paquetes del iPhone.)
   3. Ejecuta Simtrack.App.exe. Si Windows SmartScreen avisa de que es una
      aplicacion desconocida: "Mas informacion" -> "Ejecutar de todas formas".
-  4. Abre la app del iPhone en la pestaña Tracking.
+  4. Abre la app del iPhone en la pestaÃ±a Tracking.
      La app se anuncia sola por la red (UDP 4245): no hay que escribir IPs.
      Deberia pasar a IPHONE CONECTADO en unos segundos.
   5. Arranca el simulador DESPUES de esta app.
@@ -90,7 +98,7 @@ Requisitos de red
     esta arranca o vuelve a primer plano.
 
 Dashboard de SimHub (opcional)
-  - Si SimHub esta instalado y en marcha en este PC, la pestaña Dashboard del
+  - Si SimHub esta instalado y en marcha en este PC, la pestaÃ±a Dashboard del
     iPhone carga sola contra la IP correcta (se detecta el puerto).
 
 Si algo no funciona
@@ -117,3 +125,4 @@ $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 Write-Host ''
 Write-Host "Listo: $zip  ($sizeMb MB)" -ForegroundColor Green
 Get-ChildItem $target | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 2) } } | Format-Table -AutoSize
+

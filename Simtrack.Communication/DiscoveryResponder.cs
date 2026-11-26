@@ -131,10 +131,29 @@ public sealed class DiscoveryResponder : IDisposable
 
                     Interlocked.Increment(ref _requestsReceived);
 
-                    byte[] reply = Encoding.UTF8.GetBytes(BuildPayload("bridge.reply"));
-                    await client.SendAsync(reply, result.RemoteEndPoint.AddressFamily == AddressFamily.InterNetworkV6
+                    IPEndPoint target = result.RemoteEndPoint.AddressFamily == AddressFamily.InterNetworkV6
                         ? new IPEndPoint(result.RemoteEndPoint.Address.MapToIPv4(), result.RemoteEndPoint.Port)
-                        : result.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
+                        : result.RemoteEndPoint;
+
+                    byte[] reply = Encoding.UTF8.GetBytes(BuildPayload("bridge.reply"));
+
+                    // Se repite la respuesta unas cuantas veces y también al
+                    // puerto fijo 4245: en Wi-Fi se pierde algún datagrama y
+                    // el iPhone necesita recibir al menos uno.
+                    for (var attempt = 0; attempt < 3; attempt++)
+                    {
+                        await client.SendAsync(reply, target, cancellationToken).ConfigureAwait(false);
+
+                        if (target.Port != DiscoveryPort)
+                        {
+                            await client.SendAsync(
+                                reply,
+                                new IPEndPoint(target.Address, DiscoveryPort),
+                                cancellationToken).ConfigureAwait(false);
+                        }
+
+                        await Task.Delay(60, cancellationToken).ConfigureAwait(false);
+                    }
 
                     LogReceived?.Invoke($"iPhone buscando el PC desde {result.RemoteEndPoint.Address}; respondido.");
                 }
