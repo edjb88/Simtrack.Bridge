@@ -25,6 +25,36 @@
             <Setter Property="Padding" Value="18"/>
             <Setter Property="Margin" Value="6"/>
         </Style>
+
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#253244"/>
+            <Setter Property="Foreground" Value="#F1F5F9"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="16,9"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#31415A"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Chrome" Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="18">
@@ -49,6 +79,8 @@
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
                 <Ellipse x:Name="ConnectionIndicator" Width="12" Height="12" Fill="#E05252" Margin="0,0,8,0"/>
                 <TextBlock x:Name="ConnectionText" Text="ESPERANDO IPHONE" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <Button x:Name="RecenterButton" Content="RECENTRAR" Margin="18,0,0,0" Click="RecenterButton_Click"/>
+                <Button x:Name="ToggleButton" Content="DETENER" Margin="8,0,0,0" Click="ToggleButton_Click"/>
             </StackPanel>
         </Grid>
 
@@ -79,7 +111,7 @@
                 <StackPanel>
                     <TextBlock Text="RECEPCIÓN UDP" Foreground="#91A0B5" FontSize="12" FontWeight="Bold"/>
                     <TextBlock x:Name="PacketCount" Text="0" FontSize="28" FontWeight="Bold" Foreground="#39D98A" Margin="0,4,0,0"/>
-                    <TextBlock Text="Paquetes recibidos" Foreground="#91A0B5"/>
+                    <TextBlock x:Name="PacketDetail" Text="Paquetes recibidos" Foreground="#91A0B5"/>
                 </StackPanel>
             </Border>
         </Grid>
@@ -143,11 +175,16 @@
             <Border Grid.Column="1" Style="{StaticResource PanelStyle}">
                 <StackPanel>
                     <TextBlock Text="MOTOR DE TRACKING" FontSize="14" FontWeight="Bold" Foreground="#39D98A" Margin="0,0,0,18"/>
+
                     <TextBlock Text="FUSIÓN DE SENSORES" Foreground="#91A0B5" FontWeight="Bold"/>
-                    <TextBlock Text="Pendiente de implementar" FontSize="16" Margin="0,6,0,18"/>
-                    <TextBlock Text="SALIDA" Foreground="#91A0B5" FontWeight="Bold"/>
-                    <TextBlock Text="OpenTrack: pendiente" Margin="0,6,0,6"/>
-                    <TextBlock Text="Salida directa: pendiente"/>
+                    <TextBlock x:Name="FusionStatus" Text="iPhone (sin IMU)" FontSize="15" Margin="0,6,0,16"/>
+
+                    <TextBlock Text="SALIDA FREETRACK 2.0" Foreground="#91A0B5" FontWeight="Bold"/>
+                    <TextBlock x:Name="OutputStatus" Text="FT_SharedMem cerrada" FontSize="15" Margin="0,6,0,4"/>
+                    <TextBlock x:Name="WriteRateText" Text="0 Hz" Foreground="#91A0B5" Margin="0,0,0,16"/>
+
+                    <TextBlock Text="ÚLTIMA ORDEN" Foreground="#91A0B5" FontWeight="Bold"/>
+                    <TextBlock x:Name="CommandStatus" Text="Ninguna" Foreground="#91A0B5" TextWrapping="Wrap" Margin="0,6,0,0"/>
                 </StackPanel>
             </Border>
         </Grid>

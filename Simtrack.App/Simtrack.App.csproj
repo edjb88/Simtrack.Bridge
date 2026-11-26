@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Simtrack.Communication\Simtrack.Communication.csproj" />
     <ProjectReference Include="..\Simtrack.Core\Simtrack.Core.csproj" />
+    <ProjectReference Include="..\Simtrack.Output\Simtrack.Output.csproj" />
   </ItemGroup>
 
 </Project>
