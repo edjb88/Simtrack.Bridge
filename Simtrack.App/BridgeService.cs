@@ -1,5 +1,7 @@
-using System.Diagnostics;
+using System.IO;
 using System.Net;
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using Simtrack.Communication;
 using Simtrack.Core.Models;
 using Simtrack.Core.Tracking;
@@ -49,10 +51,19 @@ public sealed class BridgeService : IDisposable
     private DateTime _lastTelemetry = DateTime.MinValue;
     private IPAddress? _lastAddress;
 
+    private const string SettingsFileName = "simtrack.settings.json";
+
+    public BridgeService()
+    {
+        LoadSettings();
+    }
+
     public event Action<string>? LogReceived;
 
     /// <summary>Avisa de una orden ejecutada ("Windows" o "iPhone") para la interfaz.</summary>
     public event Action<string>? CommandReceived;
+
+    public DateTime StartedAt { get; private set; }
 
     public PoseFusion Fusion => _fusion;
     public bool IsRunning => _loopTask is { IsCompleted: false };
@@ -94,9 +105,11 @@ public sealed class BridgeService : IDisposable
         }
 
         _cancellation = new CancellationTokenSource();
-        _loopTask = Task.Run(() => WriteLoopAsync(_cancellation.Token));
+        _loopTask = Task.Run(() => WriteLoop(_cancellation.Token));
 
-        Log("Motor de salida iniciado a 250 Hz.");
+        StartedAt = DateTime.UtcNow;
+
+        Log("Motor de salida iniciado (objetivo 250 Hz).");
     }
 
     public void Stop()
@@ -181,13 +194,18 @@ public sealed class BridgeService : IDisposable
         Recenter("iPhone");
     }
 
-    private async Task WriteLoopAsync(CancellationToken cancellationToken)
+    private void WriteLoop(CancellationToken cancellationToken)
     {
-        var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(4));
+        // Windows usa por defecto una resolución de temporizador de ~15,6 ms,
+        // insuficiente para 250 Hz. Con timeBeginPeriod(1) Thread.Sleep(4)
+        // duerme ~4 ms en lugar de ~15,6 ms.
+        timeBeginPeriod(1);
 
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            const int periodMs = 4;
+
+            while (!cancellationToken.IsCancellationRequested)
             {
                 bool fresh = _fusion.HasFreshPose;
                 _iphone.Connected = fresh;
@@ -219,10 +237,9 @@ public sealed class BridgeService : IDisposable
                     _lastTelemetry = now;
                     SendTelemetry(pose);
                 }
+
+                Thread.Sleep(periodMs);
             }
-        }
-        catch (OperationCanceledException)
-        {
         }
         catch (Exception ex)
         {
@@ -230,7 +247,7 @@ public sealed class BridgeService : IDisposable
         }
         finally
         {
-            timer.Dispose();
+            timeEndPeriod(1);
         }
     }
 
@@ -253,6 +270,55 @@ public sealed class BridgeService : IDisposable
         catch (Exception ex)
         {
             Log($"No se pudo enviar telemetría: {ex.Message}");
+        }
+    }
+
+    [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+    private static extern uint TimeBeginPeriod(uint milliseconds);
+
+    [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+    private static extern uint TimeEndPeriod(uint milliseconds);
+
+    private static void timeBeginPeriod(uint milliseconds) => TimeBeginPeriod(milliseconds);
+
+    private static void timeEndPeriod(uint milliseconds) => TimeEndPeriod(milliseconds);
+
+    /// <summary>
+    /// Ajustes de ejes/suavizado en simtrack.settings.json (junto al .exe).
+    /// Si el archivo no existe se genera uno con los valores por defecto.
+    /// </summary>
+    private void LoadSettings()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                File.WriteAllText(
+                    path,
+                    JsonSerializer.Serialize(_fusion.Settings, new JsonSerializerOptions { WriteIndented = true }));
+                return;
+            }
+
+            PoseSettings? loaded = JsonSerializer.Deserialize<PoseSettings>(File.ReadAllText(path));
+
+            if (loaded is null)
+                return;
+
+            PoseSettings target = _fusion.Settings;
+            target.InvertX = loaded.InvertX;
+            target.InvertY = loaded.InvertY;
+            target.InvertZ = loaded.InvertZ;
+            target.InvertYaw = loaded.InvertYaw;
+            target.InvertPitch = loaded.InvertPitch;
+            target.InvertRoll = loaded.InvertRoll;
+            target.RotationSmoothing = loaded.RotationSmoothing;
+            target.PositionSmoothing = loaded.PositionSmoothing;
+        }
+        catch (Exception ex)
+        {
+            Log($"No se pudo leer {SettingsFileName}: {ex.Message}");
         }
     }
 

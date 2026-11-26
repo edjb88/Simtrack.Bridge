@@ -152,7 +152,21 @@ public partial class MainWindow : Window
         HeadphonesDetail.Text = "Falta Sony Head Tracker (fase 2)";
 
         PacketCount.Text = _bridge.PacketsReceived.ToString("N0");
-        PacketDetail.Text = $"{_bridge.PacketsRejected:N0} descartados · puertos 4242/4243";
+
+        bool waitingTooLong = running &&
+                              _bridge.PacketsReceived == 0 &&
+                              DateTime.UtcNow - _bridge.StartedAt > TimeSpan.FromSeconds(8);
+
+        if (waitingTooLong)
+        {
+            PacketDetail.Text = "Sin paquetes: revisa firewall (tools\\Allow-Firewall.ps1) e IP";
+            PacketDetail.Foreground = AmberBrush;
+        }
+        else
+        {
+            PacketDetail.Text = $"{_bridge.PacketsRejected:N0} descartados · puertos 4242/4243";
+            PacketDetail.Foreground = (Brush)FindResource("MutedBrush");
+        }
 
         FusionStatus.Text = fresh
             ? "iPhone TrueDepth (6DOF completo)"

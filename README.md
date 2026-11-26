@@ -17,7 +17,8 @@ Simtrack.App  --250 Hz-->  FT_SharedMem (108 bytes)  -->  Assetto Corsa EVO
 - [x] Receptor UDP 4242 (pose) y 4243 (control).
 - [x] Conversión grados → radianes y centímetros → centímetros.
 - [x] Escritor FreeTrack 2.0: `FT_SharedMem` de 108 bytes, `DataID = 1`,
-      mutex `FT_Mutext`, escritura a 250 Hz.
+      mutex `FT_Mutext`, escritura continua (~250 Hz de objetivo, ~220 Hz
+      reales con resolución de temporizador de 1 ms).
 - [x] Telemetría de vuelta al iPhone por 4244.
 - [x] Recentrado desde el botón de la app y desde el iPhone.
 - [ ] Integración del Sony Head Tracker (IMU) y filtro complementario.
@@ -95,6 +96,29 @@ comprobar IP, que los dos estén en la misma red y las reglas del firewall.
 2. En AC EVO, activar el head tracking / TrackIR en opciones.
 3. Si la cámara se mueve al revés, ajustar las inversiones en
    `Simtrack.Core/Tracking/PoseFusion.cs` (`PoseSettings`).
+
+## Ajustar ejes y suavizado sin recompilar
+
+Junto al `.exe` se genera `simtrack.settings.json`
+(`Simtrack.App/bin/Debug/net10.0-windows/simtrack.settings.json`):
+
+```json
+{
+  "InvertX": true,
+  "InvertY": false,
+  "InvertZ": false,
+  "InvertYaw": false,
+  "InvertPitch": false,
+  "InvertRoll": false,
+  "RotationSmoothing": 0.15,
+  "PositionSmoothing": 0.25
+}
+```
+
+- Cada `Invert...` cambia el signo de ese eje.
+- `Smoothing` alto = más suave pero con algo más de retardo; bajo = más
+  directo y nervioso. Valores entre 0.05 y 0.4 tienen sentido.
+- Guardar el archivo y reiniciar la app para aplicar los cambios.
 
 ## Estructura
 
