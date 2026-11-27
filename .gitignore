@@ -363,3 +363,6 @@ MigrationBackup/
 FodyWeavers.xsd
 # Paquete beta generado por tools/Publish-Beta.ps1
 dist/
+
+# Dependencias de OpenCvSharp para el puente del Kinect (se descargan aparte)
+Simtrack.Kinect/deps/
