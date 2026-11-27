@@ -127,7 +127,8 @@ public partial class MainWindow : Window
         PoseSample pose = _bridge.CurrentPose;
         bool iphoneFresh = _bridge.IphoneFresh;
         bool kinectFresh = _bridge.KinectFresh;
-        bool fresh = iphoneFresh || kinectFresh;
+        bool externalFresh = _bridge.ExternalFresh;
+        bool fresh = iphoneFresh || kinectFresh || externalFresh;
         bool running = _bridge.IsRunning;
 
         ValueX.Text = $"{pose.X,6:F2} cm";
@@ -181,6 +182,7 @@ public partial class MainWindow : Window
 
         FusionStatus.Text = _bridge.ActiveSource switch
         {
+            "OpenTrack" => "OpenTrack / KinectCam (IR)",
             "Kinect+iPhone" => "Kinect (posición) + iPhone (rotación)",
             "Kinect" => "Kinect v1 (esqueleto) · prioridad",
             "iPhone" => "iPhone TrueDepth",

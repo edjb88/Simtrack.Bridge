@@ -22,8 +22,10 @@ public sealed class BridgeService : IDisposable
 
     private readonly IphoneReceiver _receiver = new();
     private readonly KinectReceiver _kinect = new();
+    private readonly ExternalPoseReceiver _external = new();
     private readonly PoseFusion _fusionIphone = new();
     private readonly PoseFusion _fusionKinect = new();
+    private readonly PoseFusion _fusionExternal = new();
     private readonly FreeTrackWriter _writer = new();
     private readonly TelemetrySender _telemetry = new();
     private readonly DiscoveryResponder _discovery = new();
@@ -55,6 +57,9 @@ public sealed class BridgeService : IDisposable
     private IPAddress? _lastAddress;
 
     private string _activeSource = "ninguna";
+    private HeadPose? _externalPose;
+    private DateTime _externalAt = DateTime.MinValue;
+    private bool _externalLogged;
     private string _fusionMode = "auto";
     private string _loggedSource = "ninguna";
     private bool _kinectConnectedLogged;
@@ -87,6 +92,7 @@ public sealed class BridgeService : IDisposable
     public PoseSample CurrentPose => ActiveFusion.CurrentPose;
     public bool IphoneFresh => _fusionIphone.HasFreshPose;
     public bool KinectFresh => _fusionKinect.HasFreshPose;
+    public bool ExternalFresh => _fusionExternal.HasFreshPose;
 
     public bool HasKinectBridge => FindKinectHostExe() != null;
 
@@ -124,7 +130,9 @@ public sealed class BridgeService : IDisposable
     }
 
     /// <summary>Kinect manda si tiene datos frescos; si no, el iPhone.</summary>
-    private PoseFusion ActiveFusion => _fusionKinect.HasFreshPose ? _fusionKinect : _fusionIphone;
+    private PoseFusion ActiveFusion =>
+        _fusionExternal.HasFreshPose ? _fusionExternal :
+        (_fusionKinect.HasFreshPose ? _fusionKinect : _fusionIphone);
 
     public void Start()
     {
@@ -138,6 +146,9 @@ public sealed class BridgeService : IDisposable
         _kinect.LogReceived += OnReceiverLog;
         _kinect.PoseReceived += OnKinectPoseReceived;
 
+        _external.LogReceived += OnReceiverLog;
+        _external.PoseReceived += OnExternalPoseReceived;
+
         _discovery.LogReceived += OnReceiverLog;
         _discovery.SimHubPort = DetectSimHubPort();
 
@@ -149,6 +160,7 @@ public sealed class BridgeService : IDisposable
 
             _receiver.Start();
             _kinect.Start();
+            _external.Start();
             _discovery.Start();
 
             TryStartKinectHost();
@@ -197,6 +209,7 @@ public sealed class BridgeService : IDisposable
         DetachHandlers();
         _receiver.Stop();
         _kinect.Stop();
+        _external.Stop();
         StopKinectHost();
 
         _writer.Close();
@@ -208,6 +221,7 @@ public sealed class BridgeService : IDisposable
     {
         _fusionKinect.Recenter();
         _fusionIphone.Recenter();
+        _fusionExternal.Recenter();
 
         PoseSample pose = ActiveFusion.CurrentPose;
         CommandReceived?.Invoke($"Recentrado desde {origin} · {DateTime.Now:HH:mm:ss}");
@@ -225,6 +239,8 @@ public sealed class BridgeService : IDisposable
         _receiver.RecenterRequested -= OnRecenterRequested;
         _kinect.LogReceived -= OnReceiverLog;
         _kinect.PoseReceived -= OnKinectPoseReceived;
+        _external.LogReceived -= OnReceiverLog;
+        _external.PoseReceived -= OnExternalPoseReceived;
         _discovery.LogReceived -= OnReceiverLog;
     }
 
@@ -446,6 +462,23 @@ public sealed class BridgeService : IDisposable
         }
     }
 
+    private void OnExternalPoseReceived(HeadPose pose)
+    {
+        _fusionExternal.ApplyIphonePose(pose);
+
+        lock (_gate)
+        {
+            _externalPose = pose;
+            _externalAt = pose.ReceivedAt;
+        }
+
+        if (!_externalLogged)
+        {
+            _externalLogged = true;
+            Log("Tracker externo conectado (OpenTrack/KinectCam).");
+        }
+    }
+
     private void OnRecenterRequested()
     {
         Recenter("iPhone");
@@ -464,12 +497,15 @@ public sealed class BridgeService : IDisposable
 
             while (!cancellationToken.IsCancellationRequested)
             {
+                bool externalFresh = _fusionExternal.HasFreshPose;
                 bool kinectFresh = _fusionKinect.HasFreshPose;
                 bool iphoneFresh = _fusionIphone.HasFreshPose;
 
                 string source;
 
-                if (_fusionMode == "kinect")
+                if (externalFresh)
+                    source = "OpenTrack";
+                else if (_fusionMode == "kinect")
                     source = kinectFresh ? "Kinect" : (iphoneFresh ? "iPhone" : "ninguna");
                 else if (_fusionMode == "iphone")
                     source = iphoneFresh ? "iPhone" : (kinectFresh ? "Kinect" : "ninguna");
@@ -496,10 +532,15 @@ public sealed class BridgeService : IDisposable
 
                 PoseSample kinectPose = _fusionKinect.CurrentPose;
                 PoseSample iphonePose = _fusionIphone.CurrentPose;
+                PoseSample externalPose = _fusionExternal.CurrentPose;
 
                 PoseSample pose;
 
-                if (source == "Kinect+iPhone")
+                if (source == "OpenTrack")
+                {
+                    pose = externalPose;
+                }
+                else if (source == "Kinect+iPhone")
                 {
                     // Posición del Kinect (muy estable) + rotación del iPhone
                     // (TrueDepth sí da yaw/pitch/roll fiables).
@@ -624,6 +665,7 @@ public sealed class BridgeService : IDisposable
             }
 
             CopySettings(template, _fusionKinect.Settings);
+            CopySettings(template, _fusionExternal.Settings);
             _fusionMode = template.FusionMode ?? "auto";
         }
         catch (Exception ex)
@@ -656,6 +698,7 @@ public sealed class BridgeService : IDisposable
         StopKinectHost();
         _telemetry.Dispose();
         _kinect.Dispose();
+        _external.Dispose();
         _receiver.Dispose();
         _writer.Dispose();
     }

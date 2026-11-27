@@ -47,6 +47,10 @@ namespace Simtrack.Kinect
         private static RgbHeadPose _rgb;
         private static long _rgbFrames;
         private static DateTime _lastRgbTry = DateTime.MinValue;
+        private static DateTime _lastRgbOk = DateTime.MinValue;
+        private static double _lastRgbYaw;
+        private static double _lastRgbPitch;
+        private static double _lastRgbRoll;
         private static DateTime _lastReport = DateTime.UtcNow;
         private static DateTime _lastPose = DateTime.MinValue;
         private static DateTime _lastFaceOk = DateTime.MinValue;
@@ -212,6 +216,34 @@ namespace Simtrack.Kinect
             {
                 try
                 {
+                    ColorCameraSettings camera = _sensor.ColorStream.CameraSettings;
+
+                    Console.WriteLine(string.Format(
+                        "Camara: ganancia {0:F1}-{1:F1}, exposicion {2:F0}-{3:F0}",
+                        camera.MinGain,
+                        camera.MaxGain,
+                        camera.MinExposureTime,
+                        camera.MaxExposureTime));
+
+                    camera.AutoExposure = false;
+                    camera.ExposureTime = camera.MaxExposureTime;
+                    camera.Gain = camera.MaxGain;
+                    camera.Brightness = camera.MaxBrightness;
+                    camera.Contrast = camera.MaxContrast;
+                    camera.Gamma = camera.MaxGamma;
+
+                    Console.WriteLine("Camara en manual: ganancia y exposicion al maximo (penumbra).");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("No se pudo ajustar la camara: " + ex.Message);
+                }
+            }
+
+            if (_faceEnabled)
+            {
+                try
+                {
                     System.Threading.Thread.Sleep(500);
                     _faceTracker = new FaceTracker(_sensor);
                     Console.WriteLine("Face Tracking: activado.");
@@ -341,13 +373,25 @@ namespace Simtrack.Kinect
                 {
                     _lastRgbTry = DateTime.UtcNow;
 
-                    double rx, ry, rz, rYaw, rPitch, rRoll;
+                    double rx = 0, ry = 0, rz = 0, rYaw = 0, rPitch = 0, rRoll = 0;
 
-                    try
-                    {
-                        if (_rgb.TryEstimate(_colorPixels, out rx, out ry, out rz, out rYaw, out rPitch, out rRoll))
+                        bool detected = false;
+
+                        try
+                        {
+                            detected = _rgb.TryEstimate(_colorPixels, out rx, out ry, out rz, out rYaw, out rPitch, out rRoll);
+                        }
+                        catch (Exception)
+                        {
+                        }
+
+                        if (detected)
                         {
                             _rgbFrames++;
+                            _lastRgbOk = DateTime.UtcNow;
+                            _lastRgbYaw = rYaw;
+                            _lastRgbPitch = rPitch;
+                            _lastRgbRoll = rRoll;
 
                             // Posicion a partir del centro de la cara y la
                             // profundidad del Kinect (mas fiable que tvec).
@@ -367,10 +411,23 @@ namespace Simtrack.Kinect
                                 SendPoseAt(rx, ry, rz, rYaw, rPitch, rRoll, true);
                             }
                         }
-                    }
-                    catch (Exception)
-                    {
-                    }
+                        else if (_lastRgbOk != DateTime.MinValue &&
+                                 (DateTime.UtcNow - _lastRgbOk).TotalMilliseconds < 800)
+                        {
+                            // Sin deteccion en este frame: se mantiene la ultima
+                            // orientacion con la posicion actualizada por profundidad.
+                            int px = (int)_rgb.LastCenterX;
+                            int py = (int)_rgb.LastCenterY;
+                            int depthMm = AverageDepth(px, py, 12);
+
+                            if (depthMm > 400 && depthMm < 4000)
+                            {
+                                double zcm = depthMm / 10.0;
+                                double xcm = (px - 320.0) * zcm / 533.0;
+                                double ycm = (py - 240.0) * zcm / 533.0;
+                                SendPoseAt(xcm, ycm, zcm, _lastRgbYaw, _lastRgbPitch, _lastRgbRoll, true);
+                            }
+                        }
                 }
 
                 if (_snapshotPath != null && !_snapshotDone)
