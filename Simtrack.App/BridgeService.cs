@@ -223,7 +223,10 @@ public sealed class BridgeService : IDisposable
                 return;
             }
 
-            _kinectProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, "--quiet")
+            string logPath = Path.Combine(AppContext.BaseDirectory, "kinect.log");
+            string arguments = "--quiet --log=" + (logPath.Contains(" ") ? "\"" + logPath + "\"" : logPath);
+
+            _kinectProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, arguments)
             {
                 UseShellExecute = false,
                 CreateNoWindow = true

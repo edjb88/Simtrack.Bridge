@@ -29,11 +29,16 @@ namespace Simtrack.Kinect
         private static bool _verbose = true;
         private static bool _snapshotDone;
         private static string _snapshotPath;
+        private static int? _setAngle;
+        private static string _depthPath;
+        private static string _mode = "seated";
+        private static string _logPath;
+        private static bool _depthDone;
+        private static long _depthFrames;
 
         private static int Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
-            Console.WriteLine("Simtrack Kinect host v0.2 (Kinect SDK 1.8)");
 
             if (args != null)
             {
@@ -44,8 +49,39 @@ namespace Simtrack.Kinect
 
                     if (arg.StartsWith("--snapshot="))
                         _snapshotPath = arg.Substring("--snapshot=".Length);
+
+                    if (arg.StartsWith("--depth="))
+                        _depthPath = arg.Substring("--depth=".Length);
+
+                    if (arg.StartsWith("--log="))
+                        _logPath = arg.Substring("--log=".Length);
+
+                    if (arg.StartsWith("--mode="))
+                        _mode = arg.Substring("--mode=".Length);
+
+                    if (arg.StartsWith("--set-angle="))
+                    {
+                        int angle;
+                        if (int.TryParse(arg.Substring("--set-angle=".Length), out angle))
+                            _setAngle = angle;
+                    }
                 }
             }
+
+            if (_logPath != null)
+            {
+                try
+                {
+                    var writer = new StreamWriter(_logPath, false, System.Text.Encoding.UTF8);
+                    writer.AutoFlush = true;
+                    Console.SetOut(writer);
+                }
+                catch
+                {
+                }
+            }
+
+            Console.WriteLine("Simtrack Kinect host v0.2 (Kinect SDK 1.8)");
 
             var sensors = KinectSensor.KinectSensors;
 
@@ -59,11 +95,18 @@ namespace Simtrack.Kinect
             Console.WriteLine("Sensor: " + _sensor.UniqueKinectId);
             Console.WriteLine("Estado inicial: " + _sensor.Status);
 
-            // Modo sentado + rango cercano: en un escritorio solo se ve medio
-            // cuerpo, y con el modo normal Kinect no engancha el esqueleto.
-            _sensor.DepthStream.Range = DepthRange.Near;
-            _sensor.SkeletonStream.TrackingMode = SkeletonTrackingMode.Seated;
-            _sensor.SkeletonStream.EnableTrackingInNearRange = true;
+            if (_setAngle.HasValue)
+            {
+                return SetElevation(_setAngle.Value);
+            }
+
+            // Modo sentado: en un escritorio no se ve el cuerpo completo.
+            // OJO: el "near range" solo existe en Kinect for Windows; con un
+            // Kinect de Xbox 360 lanza "feature not supported", asi que se usa
+            // el rango normal (0,8 - 4 m).
+            _sensor.SkeletonStream.TrackingMode = _mode == "standing"
+                ? SkeletonTrackingMode.Default
+                : SkeletonTrackingMode.Seated;
 
             _sensor.SkeletonStream.Enable(new TransformSmoothParameters
             {
@@ -74,12 +117,21 @@ namespace Simtrack.Kinect
                 MaxDeviationRadius = 0.04f
             });
 
+            Console.WriteLine("TrackingMode real: " + _sensor.SkeletonStream.TrackingMode);
+            Console.WriteLine("DepthRange real: " + _sensor.DepthStream.Range);
+
             _sensor.SkeletonFrameReady += OnSkeletonFrame;
 
             if (_snapshotPath != null)
             {
                 _sensor.ColorStream.Enable(ColorImageFormat.RgbResolution640x480Fps30);
                 _sensor.ColorFrameReady += OnColorFrame;
+            }
+
+            if (_depthPath != null)
+            {
+                _sensor.DepthStream.Enable(DepthImageFormat.Resolution640x480Fps30);
+                _sensor.DepthFrameReady += OnDepthFrame;
             }
 
             _sensor.Start();
@@ -100,12 +152,13 @@ namespace Simtrack.Kinect
                 return;
 
             Console.WriteLine(string.Format(
-                "estado={0} frames={1} sentados={2} poses={3} ({4} Hz)",
+                "estado={0} frames={1} sentados={2} poses={3} depth={5} ({4} Hz)",
                 _sensor == null ? "?" : _sensor.Status.ToString(),
                 _frames,
                 _positionOnly,
                 _poses,
-                (int)(_poses / seconds)));
+                (int)(_poses / seconds),
+                _depthFrames));
 
             _lastReport = DateTime.UtcNow;
             _frames = 0;
@@ -249,6 +302,101 @@ namespace Simtrack.Kinect
             }
         }
 
+        private static int SetElevation(int degrees)
+        {
+            int target = Math.Max(-27, Math.Min(27, degrees));
+
+            try
+            {
+                _sensor.Start();
+                System.Threading.Thread.Sleep(1500);
+                _sensor.ElevationAngle = target;
+                System.Threading.Thread.Sleep(1200);
+                Console.WriteLine("Angulo de inclinacion: " + _sensor.ElevationAngle + " grados (pedido " + target + ").");
+                _sensor.Stop();
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("No se pudo ajustar el motor: " + ex.Message);
+                return 2;
+            }
+        }
+
+        private static void OnDepthFrame(object sender, DepthImageFrameReadyEventArgs e)
+        {
+            using (DepthImageFrame frame = e.OpenDepthImageFrame())
+            {
+                if (frame == null)
+                    return;
+
+                _depthFrames++;
+
+                if (_depthDone)
+                    return;
+
+                try
+                {
+                    int width = frame.Width;
+                    int height = frame.Height;
+                    var raw = new short[frame.PixelDataLength];
+                    frame.CopyPixelDataTo(raw);
+
+                    short min = short.MaxValue;
+                    short max = 0;
+
+                    using (var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+                    {
+                        BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+
+                        try
+                        {
+                            var line = new byte[width * 3];
+
+                            for (int y = 0; y < height; y++)
+                            {
+                                for (int x = 0; x < width; x++)
+                                {
+                                    int millimeters = raw[y * width + x] >> 3;
+                                    byte gray = 0;
+
+                                    if (millimeters > 0)
+                                    {
+                                        if (millimeters < min) min = (short)millimeters;
+                                        if (millimeters > max) max = (short)millimeters;
+
+                                        int value = 255 - (millimeters - 400) * 255 / 2600;
+                                        if (value < 0) value = 0;
+                                        if (value > 255) value = 255;
+                                        gray = (byte)value;
+                                    }
+
+                                    line[x * 3] = gray;
+                                    line[x * 3 + 1] = gray;
+                                    line[x * 3 + 2] = gray;
+                                }
+
+                                IntPtr destination = new IntPtr(data.Scan0.ToInt64() + (long)y * data.Stride);
+                                System.Runtime.InteropServices.Marshal.Copy(line, 0, destination, line.Length);
+                            }
+                        }
+                        finally
+                        {
+                            bitmap.UnlockBits(data);
+                        }
+
+                        bitmap.Save(_depthPath, ImageFormat.Png);
+                        _depthDone = true;
+                        Console.WriteLine("Profundidad guardada en " + _depthPath + " (min " + min + " mm, max " + max + " mm)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("No se pudo guardar la profundidad: " + ex.Message);
+                    _depthDone = true;
+                }
+            }
+        }
         private static void Send(double x, double y, double z, double yaw, double pitch, double roll)
         {
             var data = new byte[48];
