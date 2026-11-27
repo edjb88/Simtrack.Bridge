@@ -65,6 +65,7 @@ namespace Simtrack.Kinect
         private static long _depthFrames;
         private static string _mode = "seated";
         private static string _logPath;
+        private static bool _irMode;
         private static bool _motorCalibrate;
         private static int _motorScore;
         private static bool _motorCollect;
@@ -93,6 +94,9 @@ namespace Simtrack.Kinect
 
                     if (arg == "--quiet")
                         _verbose = false;
+
+                    if (arg == "--ir")
+                        _irMode = true;
 
                     if (arg == "--motor-calibrate")
                         _motorCalibrate = true;
@@ -130,7 +134,10 @@ namespace Simtrack.Kinect
                 }
             }
 
-            Console.WriteLine("Simtrack Kinect host v0.3 (SDK 1.8 + Face Tracking)");
+            Console.WriteLine("Simtrack Kinect host v0.4 (SDK 1.8 + Face Tracking + IR nativo)");
+
+            if (_irMode)
+                return RunIr();
 
             var sensors = KinectSensor.KinectSensors;
 
@@ -259,6 +266,111 @@ namespace Simtrack.Kinect
             {
                 System.Threading.Thread.Sleep(1000);
                 Report();
+            }
+        }
+
+        /// <summary>
+        /// Modo infrarrojos: usa la API nativa (Kinect10.dll) para leer el flujo
+        /// IR y calcula la pose con Haar + LBF. Funciona a oscuras.
+        /// </summary>
+        private static int RunIr()
+        {
+            string bin = AppContext.BaseDirectory;
+            string cascade = System.IO.Path.Combine(bin, "haarcascade_frontalface_default.xml");
+            string facemark = System.IO.Path.Combine(bin, "lbfmodel.yaml");
+
+            if (!System.IO.File.Exists(cascade) || !System.IO.File.Exists(facemark))
+            {
+                Console.WriteLine("Faltan los modelos Haar/LBF junto al ejecutable.");
+                return 4;
+            }
+
+            var rgb = new RgbHeadPose(cascade, facemark, 640, 480);
+            var ir = new NativeIr();
+
+            try
+            {
+                ir.Open();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("IR nativo no disponible: " + ex.Message);
+                return 5;
+            }
+
+            Console.WriteLine("IR nativo abierto (640x480). Enviando pose a 127.0.0.1:" + PosePort + ".");
+
+            var gray = new byte[640 * 480];
+            var raw = new byte[640 * 480 * 2];
+            var lastReport = DateTime.UtcNow;
+            long frames = 0;
+            long poses = 0;
+
+            while (true)
+            {
+                byte[] frame = ir.GetFrame(100);
+
+                if (frame == null)
+                    continue;
+
+                frames++;
+                Buffer.BlockCopy(frame, 0, raw, 0, Math.Min(frame.Length, raw.Length));
+
+                int min = int.MaxValue;
+                int max = 0;
+
+                for (var i = 0; i < gray.Length; i++)
+                {
+                    int value = raw[i * 2] | (raw[i * 2 + 1] << 8);
+
+                    if (value < min) min = value;
+                    if (value > max) max = value;
+                }
+
+                if (max > min)
+                {
+                    double scale = 255.0 / (max - min);
+
+                    for (var i = 0; i < gray.Length; i++)
+                    {
+                        int value = raw[i * 2] | (raw[i * 2 + 1] << 8);
+                        int normalized = (int)((value - min) * scale);
+
+                        if (normalized < 0) normalized = 0;
+                        if (normalized > 255) normalized = 255;
+
+                        gray[i] = (byte)normalized;
+                    }
+
+                    double px, py, pz, yaw, pitch, roll;
+
+                    try
+                    {
+                        if (rgb.TryEstimateGray(gray, out px, out py, out pz, out yaw, out pitch, out roll))
+                        {
+                            poses++;
+
+                            // Distancia aproximada por el tamano de la cara:
+                            // 14 cm de ancho, focal ~533 px.
+                            double zcm = 533.0 * 14.0 / Math.Max(20.0, rgb.LastFaceWidth);
+                            double xcm = (rgb.LastCenterX - 320.0) * zcm / 533.0;
+                            double ycm = (rgb.LastCenterY - 240.0) * zcm / 533.0;
+
+                            SendPoseAt(xcm, ycm, zcm, yaw, pitch, roll, true);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+
+                if ((DateTime.UtcNow - lastReport).TotalSeconds >= 1)
+                {
+                    Console.WriteLine(string.Format("ir frames={0} poses={1}", frames, poses));
+                    frames = 0;
+                    poses = 0;
+                    lastReport = DateTime.UtcNow;
+                }
             }
         }
 

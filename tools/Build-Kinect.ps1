@@ -17,6 +17,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $outDir = Join-Path $root 'Simtrack.Kinect\bin'
 $source = Join-Path $root 'Simtrack.Kinect\KinectHost.cs'
 $rgbSource = Join-Path $root 'Simtrack.Kinect\RgbHeadPose.cs'
+$irSource = Join-Path $root 'Simtrack.Kinect\NativeIr.cs'
 $deps = Join-Path $root 'Simtrack.Kinect\deps'
 
 $sdkAssemblies = 'C:\Program Files\Microsoft SDKs\Kinect\v1.8\Assemblies'
@@ -69,7 +70,8 @@ Write-Host 'Compilando KinectHost (Face Tracking + head pose RGB)' -ForegroundCo
     "/r:$netStandard" `
     /r:System.Drawing.dll `
     $source `
-    $rgbSource
+    $rgbSource `
+    $irSource
 
 if ($LASTEXITCODE -ne 0) {
     throw 'La compilacion ha fallado.'
