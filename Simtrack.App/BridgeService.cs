@@ -21,7 +21,9 @@ public sealed class BridgeService : IDisposable
     private readonly object _gate = new();
 
     private readonly IphoneReceiver _receiver = new();
-    private readonly PoseFusion _fusion = new();
+    private readonly KinectReceiver _kinect = new();
+    private readonly PoseFusion _fusionIphone = new();
+    private readonly PoseFusion _fusionKinect = new();
     private readonly FreeTrackWriter _writer = new();
     private readonly TelemetrySender _telemetry = new();
     private readonly DiscoveryResponder _discovery = new();
@@ -52,6 +54,11 @@ public sealed class BridgeService : IDisposable
     private DateTime _lastTelemetry = DateTime.MinValue;
     private IPAddress? _lastAddress;
 
+    private string _activeSource = "ninguna";
+    private string _loggedSource = "ninguna";
+    private bool _kinectConnectedLogged;
+    private System.Diagnostics.Process? _kinectProcess;
+
     private const string SettingsFileName = "simtrack.settings.json";
 
     public BridgeService()
@@ -66,17 +73,28 @@ public sealed class BridgeService : IDisposable
 
     public DateTime StartedAt { get; private set; }
 
-    public PoseFusion Fusion => _fusion;
+    public PoseFusion Fusion => ActiveFusion;
     public bool IsRunning => _loopTask is { IsCompleted: false };
     public bool FreeTrackOpen => _writer.IsOpen;
 
     public long PacketsReceived => _receiver.PacketsReceived;
     public long PacketsRejected => _receiver.PacketsRejected;
+    public long KinectPackets => _kinect.PacketsReceived;
     public double WriteRateHz { get { lock (_gate) { return _writeRateHz; } } }
     public IPAddress? RemoteAddress => _lastAddress;
-    public PoseSample CurrentPose => _fusion.CurrentPose;
-    public bool IphoneFresh => _fusion.HasFreshPose;
+    public PoseSample CurrentPose => ActiveFusion.CurrentPose;
+    public bool IphoneFresh => _fusionIphone.HasFreshPose;
+    public bool KinectFresh => _fusionKinect.HasFreshPose;
+
+    public string ActiveSource
+    {
+        get { lock (_gate) { return _activeSource; } }
+    }
+
     public DateTime LastWriteAt => _writer.LastWriteAt;
+
+    /// <summary>Kinect manda si tiene datos frescos; si no, el iPhone.</summary>
+    private PoseFusion ActiveFusion => _fusionKinect.HasFreshPose ? _fusionKinect : _fusionIphone;
 
     public void Start()
     {
@@ -86,6 +104,9 @@ public sealed class BridgeService : IDisposable
         _receiver.LogReceived += OnReceiverLog;
         _receiver.PoseReceived += OnPoseReceived;
         _receiver.RecenterRequested += OnRecenterRequested;
+
+        _kinect.LogReceived += OnReceiverLog;
+        _kinect.PoseReceived += OnKinectPoseReceived;
 
         _discovery.LogReceived += OnReceiverLog;
         _discovery.SimHubPort = DetectSimHubPort();
@@ -97,13 +118,17 @@ public sealed class BridgeService : IDisposable
                 $"({FreeTrackLayout.HeapSize} bytes, FTData {FreeTrackLayout.DataSize} bytes).");
 
             _receiver.Start();
+            _kinect.Start();
             _discovery.Start();
+
+            TryStartKinectHost();
         }
         catch (Exception ex)
         {
             Log($"ERROR al arrancar: {ex.Message}");
 
             _discovery.Stop();
+            _kinect.Stop();
             _writer.Close();
             DetachHandlers();
 
@@ -141,6 +166,8 @@ public sealed class BridgeService : IDisposable
         _discovery.Stop();
         DetachHandlers();
         _receiver.Stop();
+        _kinect.Stop();
+        StopKinectHost();
 
         _writer.Close();
 
@@ -149,9 +176,10 @@ public sealed class BridgeService : IDisposable
 
     public void Recenter(string origin = "Windows")
     {
-        _fusion.Recenter();
+        _fusionKinect.Recenter();
+        _fusionIphone.Recenter();
 
-        PoseSample pose = _fusion.CurrentPose;
+        PoseSample pose = ActiveFusion.CurrentPose;
         CommandReceived?.Invoke($"Recentrado desde {origin} · {DateTime.Now:HH:mm:ss}");
         Log($"Recentrado ({origin}): " +
             $"X {pose.X:F1} cm, Y {pose.Y:F1} cm, Z {pose.Z:F1} cm, " +
@@ -165,7 +193,64 @@ public sealed class BridgeService : IDisposable
         _receiver.LogReceived -= OnReceiverLog;
         _receiver.PoseReceived -= OnPoseReceived;
         _receiver.RecenterRequested -= OnRecenterRequested;
+        _kinect.LogReceived -= OnReceiverLog;
+        _kinect.PoseReceived -= OnKinectPoseReceived;
         _discovery.LogReceived -= OnReceiverLog;
+    }
+
+    /// <summary>Arranca el puente del Kinect si está junto al ejecutable.</summary>
+    private void TryStartKinectHost()
+    {
+        try
+        {
+            string[] candidates =
+            {
+                Path.Combine(AppContext.BaseDirectory, "Simtrack.KinectHost.exe"),
+                Path.Combine(AppContext.BaseDirectory, "Kinect", "Simtrack.KinectHost.exe")
+            };
+
+            string? exe = candidates.FirstOrDefault(File.Exists);
+
+            if (exe is null)
+            {
+                Log("Kinect: puente no instalado (opcional). Se usa el iPhone.");
+                return;
+            }
+
+            if (System.Diagnostics.Process.GetProcessesByName("Simtrack.KinectHost").Length > 0)
+            {
+                Log("Kinect: el puente ya estaba en marcha.");
+                return;
+            }
+
+            _kinectProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, "--quiet")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+
+            Log("Kinect: puente iniciado.");
+        }
+        catch (Exception ex)
+        {
+            Log($"Kinect: no se pudo iniciar el puente ({ex.Message}).");
+        }
+    }
+
+    private void StopKinectHost()
+    {
+        try
+        {
+            if (_kinectProcess is { HasExited: false })
+                _kinectProcess.Kill();
+
+            _kinectProcess?.Dispose();
+            _kinectProcess = null;
+        }
+        catch
+        {
+            _kinectProcess = null;
+        }
     }
 
     /// <summary>
@@ -205,7 +290,7 @@ public sealed class BridgeService : IDisposable
 
     private void OnPoseReceived(HeadPose pose, IPAddress address)
     {
-        _fusion.ApplyIphonePose(pose);
+        _fusionIphone.ApplyIphonePose(pose);
 
         bool isNewAddress;
 
@@ -222,6 +307,17 @@ public sealed class BridgeService : IDisposable
         }
 
         _iphone.LastUpdate = DateTime.UtcNow;
+    }
+
+    private void OnKinectPoseReceived(HeadPose pose)
+    {
+        _fusionKinect.ApplyIphonePose(pose);
+
+        if (!_kinectConnectedLogged)
+        {
+            _kinectConnectedLogged = true;
+            Log("Kinect conectado: enviando pose por UDP 4246.");
+        }
     }
 
     private void OnRecenterRequested()
@@ -242,11 +338,33 @@ public sealed class BridgeService : IDisposable
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                bool fresh = _fusion.HasFreshPose;
-                _iphone.Connected = fresh;
-                _iphone.SampleRateHz = fresh ? 60 : 0;
+                bool kinectFresh = _fusionKinect.HasFreshPose;
+                bool iphoneFresh = _fusionIphone.HasFreshPose;
 
-                PoseSample pose = _fusion.CurrentPose;
+                string source = kinectFresh ? "Kinect" : (iphoneFresh ? "iPhone" : "ninguna");
+
+                lock (_gate)
+                {
+                    _activeSource = source;
+                }
+
+                if (source != _loggedSource && source != "ninguna")
+                {
+                    _loggedSource = source;
+                    Log($"Fuente de tracking activa: {source}.");
+                }
+                else if (source == "ninguna")
+                {
+                    _loggedSource = source;
+                }
+
+                _iphone.Connected = iphoneFresh;
+                _iphone.SampleRateHz = iphoneFresh ? 60 : 0;
+
+                PoseSample pose = kinectFresh
+                    ? _fusionKinect.CurrentPose
+                    : _fusionIphone.CurrentPose;
+
                 _writer.Write(pose);
 
                 Interlocked.Increment(ref _writeCounter);
@@ -328,33 +446,40 @@ public sealed class BridgeService : IDisposable
 
         try
         {
+            PoseSettings template = _fusionIphone.Settings;
+
             if (!File.Exists(path))
             {
                 File.WriteAllText(
                     path,
-                    JsonSerializer.Serialize(_fusion.Settings, new JsonSerializerOptions { WriteIndented = true }));
-                return;
+                    JsonSerializer.Serialize(template, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            else
+            {
+                PoseSettings? loaded = JsonSerializer.Deserialize<PoseSettings>(File.ReadAllText(path));
+
+                if (loaded is not null)
+                    CopySettings(loaded, template);
             }
 
-            PoseSettings? loaded = JsonSerializer.Deserialize<PoseSettings>(File.ReadAllText(path));
-
-            if (loaded is null)
-                return;
-
-            PoseSettings target = _fusion.Settings;
-            target.InvertX = loaded.InvertX;
-            target.InvertY = loaded.InvertY;
-            target.InvertZ = loaded.InvertZ;
-            target.InvertYaw = loaded.InvertYaw;
-            target.InvertPitch = loaded.InvertPitch;
-            target.InvertRoll = loaded.InvertRoll;
-            target.RotationSmoothing = loaded.RotationSmoothing;
-            target.PositionSmoothing = loaded.PositionSmoothing;
+            CopySettings(template, _fusionKinect.Settings);
         }
         catch (Exception ex)
         {
             Log($"No se pudo leer {SettingsFileName}: {ex.Message}");
         }
+    }
+
+    private static void CopySettings(PoseSettings from, PoseSettings to)
+    {
+        to.InvertX = from.InvertX;
+        to.InvertY = from.InvertY;
+        to.InvertZ = from.InvertZ;
+        to.InvertYaw = from.InvertYaw;
+        to.InvertPitch = from.InvertPitch;
+        to.InvertRoll = from.InvertRoll;
+        to.RotationSmoothing = from.RotationSmoothing;
+        to.PositionSmoothing = from.PositionSmoothing;
     }
 
     private void Log(string message)
@@ -365,7 +490,9 @@ public sealed class BridgeService : IDisposable
     public void Dispose()
     {
         Stop();
+        StopKinectHost();
         _telemetry.Dispose();
+        _kinect.Dispose();
         _receiver.Dispose();
         _writer.Dispose();
     }

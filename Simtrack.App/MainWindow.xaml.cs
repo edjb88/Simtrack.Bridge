@@ -119,7 +119,9 @@ public partial class MainWindow : Window
     private void RefreshUi()
     {
         PoseSample pose = _bridge.CurrentPose;
-        bool fresh = _bridge.IphoneFresh;
+        bool iphoneFresh = _bridge.IphoneFresh;
+        bool kinectFresh = _bridge.KinectFresh;
+        bool fresh = iphoneFresh || kinectFresh;
         bool running = _bridge.IsRunning;
 
         ValueX.Text = $"{pose.X,6:F2} cm";
@@ -137,15 +139,17 @@ public partial class MainWindow : Window
         else if (fresh)
         {
             ConnectionIndicator.Fill = GreenBrush;
-            ConnectionText.Text = "IPHONE CONECTADO";
+            if (kinectFresh && iphoneFresh) ConnectionText.Text = "KINECT + IPHONE";
+            else if (kinectFresh) ConnectionText.Text = "KINECT CONECTADO";
+            else ConnectionText.Text = "IPHONE CONECTADO";
         }
         else
         {
             ConnectionIndicator.Fill = AmberBrush;
-            ConnectionText.Text = "ESPERANDO IPHONE";
+            ConnectionText.Text = "ESPERANDO SENSOR";
         }
 
-        IphoneStatus.Text = fresh ? "Recibiendo pose" : "Sin conexión";
+        IphoneStatus.Text = iphoneFresh ? "Recibiendo pose" : "Sin conexión";
         IphoneAddress.Text = $"IP: {_bridge.RemoteAddress?.ToString() ?? "desconocida"}";
 
         HeadphonesStatus.Text = "No integrado todavía";
@@ -155,6 +159,7 @@ public partial class MainWindow : Window
 
         bool waitingTooLong = running &&
                               _bridge.PacketsReceived == 0 &&
+                              _bridge.KinectPackets == 0 &&
                               DateTime.UtcNow - _bridge.StartedAt > TimeSpan.FromSeconds(8);
 
         if (waitingTooLong)
@@ -164,13 +169,17 @@ public partial class MainWindow : Window
         }
         else
         {
-            PacketDetail.Text = $"{_bridge.PacketsRejected:N0} descartados · puertos 4242/4243";
+            PacketDetail.Text = $"{_bridge.PacketsRejected:N0} descartados · iPhone {_bridge.PacketsReceived:N0} · Kinect {_bridge.KinectPackets:N0}";
             PacketDetail.Foreground = (Brush)FindResource("MutedBrush");
         }
 
-        FusionStatus.Text = fresh
-            ? "iPhone TrueDepth (6DOF completo)"
-            : "iPhone TrueDepth (esperando datos)";
+        FusionStatus.Text = _bridge.ActiveSource switch
+        {
+            "Kinect" => "Kinect v1 (esqueleto) · prioridad",
+            "iPhone" => "iPhone TrueDepth",
+            _ => "Sin fuente de tracking"
+        };
+        FusionStatus.Foreground = _bridge.ActiveSource == "ninguna" ? AmberBrush : GreenBrush;
 
         if (_bridge.FreeTrackOpen)
         {

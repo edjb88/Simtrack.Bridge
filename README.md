@@ -117,6 +117,33 @@ Si el PC no aparece, la app usa la IP de respaldo compilada
 (`SimtrackNetwork.pcIP`). El descubrimiento necesita el puerto UDP **4245**
 abierto en el firewall (lo añade `tools/Allow-Firewall.ps1`).
 
+## Kinect v1 (Xbox 360) como fuente alternativa
+
+El PC anuncia la pose por dos vías: el iPhone (UDP 4242) y un puente local para
+Kinect v1 (UDP 4246). **Manda el Kinect** si tiene datos frescos; si no, el
+iPhone.
+
+Requisitos:
+
+- Drivers de Kinect v1.8 (`Kinect for Windows Runtime v1.8`): con eso el sensor
+  aparece como `Kinect for Windows Camera` y deja `Microsoft.Kinect.dll` en la
+  GAC.
+- Compilar el puente: `powershell -ExecutionPolicy Bypass -File .\tools\Build-Kinect.ps1`
+  (usa el `csc` de .NET Framework 4.8, sin necesidad de Visual Studio).
+- Copiar `Simtrack.KinectHost.exe` junto a `Simtrack.App.exe` (o a una
+  subcarpeta `Kinect\`). La app lo arranca y lo para sola.
+
+El puente usa el esqueleto en **modo sentado + rango cercano** (lo adecuado
+para un escritorio) y manda posición de la cabeza en cm y la orientación del
+hueso de la cabeza en grados. Para comprobar que el sensor ve bien:
+
+```powershell
+.\Simtrack.KinectHost.exe --snapshot=C:\ruta\kinect.png
+```
+
+Si el esqueleto no engancha, revisar que el sensor mire al usuario a 1-2 m y
+que la imagen del snapshot muestre a la persona.
+
 ## Ajustar ejes y suavizado sin recompilar
 
 Junto al `.exe` se genera `simtrack.settings.json`
