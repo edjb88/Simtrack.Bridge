@@ -31,6 +31,8 @@ namespace Simtrack.Kinect
         private ImageStreamReleaseFrameDelegate _releaseFrame;
         private ReleaseDelegate _release;
         private LockRectDelegate _lockRect;
+        private GetLevelCountDelegate _getLevelCount;
+        private GetLevelDescDelegate _getLevelDesc;
         private UnlockRectDelegate _unlockRect;
 
         private readonly byte[] _frameBuffer = new byte[128];
@@ -119,9 +121,9 @@ namespace Simtrack.Kinect
 
             int hr = _getNextFrame(_sensor, _stream, (uint)timeoutMs, _frameBuffer);
 
-            if (_debugCalls < 5)
+            if (_debugCalls < 2)
             {
-                Console.WriteLine("IR frame hr=0x" + hr.ToString("X8") + " bytes=" + _frameBuffer[0].ToString());
+                Console.WriteLine("IR frame hr=0x" + hr.ToString("X8"));
                 _debugCalls++;
             }
 
@@ -140,20 +142,36 @@ namespace Simtrack.Kinect
 
             if (_lockRect == null)
             {
-                IntPtr lockPtr = Marshal.ReadIntPtr(_textureVtable, 3 * IntPtr.Size);
+                // Orden real comprobado con ProbeTex: LockRect en el slot 5.
+                IntPtr lockPtr = Marshal.ReadIntPtr(_textureVtable, 5 * IntPtr.Size);
                 IntPtr unlockPtr = Marshal.ReadIntPtr(_textureVtable, 4 * IntPtr.Size);
+
+                IntPtr countPtr = Marshal.ReadIntPtr(_textureVtable, 3 * IntPtr.Size);
+                IntPtr descPtr = Marshal.ReadIntPtr(_textureVtable, 6 * IntPtr.Size);
 
                 _lockRect = (LockRectDelegate)Marshal.GetDelegateForFunctionPointer(lockPtr, typeof(LockRectDelegate));
                 _unlockRect = (UnlockRectDelegate)Marshal.GetDelegateForFunctionPointer(unlockPtr, typeof(UnlockRectDelegate));
+                _getLevelCount = (GetLevelCountDelegate)Marshal.GetDelegateForFunctionPointer(countPtr, typeof(GetLevelCountDelegate));
+                _getLevelDesc = (GetLevelDescDelegate)Marshal.GetDelegateForFunctionPointer(descPtr, typeof(GetLevelDescDelegate));
+
+                if (_debugCalls < 2)
+                {
+                    try
+                    {
+                        var desc = new byte[8];
+                        int descHr = _getLevelDesc(texture, 0, desc);
+                        Console.WriteLine("IR textura descHr=0x" + descHr.ToString("X8") +
+                                          " ancho=" + BitConverter.ToUInt32(desc, 0) +
+                                          " alto=" + BitConverter.ToUInt32(desc, 4));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("IR textura: " + ex.Message);
+                    }
+                }
             }
 
-            if (_debugCalls < 6)
-                Console.WriteLine("IR texture=0x" + texture.ToString("X"));
-
             hr = _lockRect(texture, 0, _lockedRect, IntPtr.Zero, 0);
-
-            if (_debugCalls < 6)
-                Console.WriteLine("IR lock hr=0x" + hr.ToString("X8") + " pitch=" + BitConverter.ToInt32(_lockedRect, 0) + " size=" + BitConverter.ToInt32(_lockedRect, 4));
 
             if (hr < 0)
             {
@@ -243,6 +261,12 @@ namespace Simtrack.Kinect
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate int UnlockRectDelegate(IntPtr self, uint level);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int GetLevelCountDelegate(IntPtr self);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int GetLevelDescDelegate(IntPtr self, uint level, [In, Out] byte[] desc);
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate uint ReleaseDelegate(IntPtr self);

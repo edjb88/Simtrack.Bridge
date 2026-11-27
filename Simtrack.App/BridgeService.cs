@@ -61,6 +61,7 @@ public sealed class BridgeService : IDisposable
     private DateTime _externalAt = DateTime.MinValue;
     private bool _externalLogged;
     private string _fusionMode = "auto";
+    private string _kinectMode = "sdk";
     private string _loggedSource = "ninguna";
     private bool _kinectConnectedLogged;
     private System.Diagnostics.Process? _kinectProcess;
@@ -347,6 +348,9 @@ public sealed class BridgeService : IDisposable
             // Con Face Tracking + head pose RGB (Haar + LBF) el puente
             // necesita los flujos de color y profundidad.
             string arguments = "--quiet --log=" + (logPath.Contains(" ") ? "\"" + logPath + "\"" : logPath);
+
+            if (_kinectMode == "ir")
+                arguments += " --ir";
 
             _kinectProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, arguments)
             {
@@ -667,6 +671,7 @@ public sealed class BridgeService : IDisposable
             CopySettings(template, _fusionKinect.Settings);
             CopySettings(template, _fusionExternal.Settings);
             _fusionMode = template.FusionMode ?? "auto";
+            _kinectMode = template.KinectMode ?? "sdk";
         }
         catch (Exception ex)
         {
@@ -685,6 +690,7 @@ public sealed class BridgeService : IDisposable
         to.RotationSmoothing = from.RotationSmoothing;
         to.PositionSmoothing = from.PositionSmoothing;
         to.FusionMode = from.FusionMode;
+        to.KinectMode = from.KinectMode;
     }
 
     private void Log(string message)

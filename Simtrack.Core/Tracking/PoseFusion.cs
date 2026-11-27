@@ -29,6 +29,12 @@ public sealed class PoseSettings
     /// están los dos), "kinect" (todo del Kinect) o "iphone" (todo del iPhone).
     /// </summary>
     public string FusionMode { get; set; } = "auto";
+
+    /// <summary>
+    /// Fuente del Kinect: "sdk" (esqueleto + color) o "ir" (infrarrojos por API
+    /// nativa, funciona a oscuras).
+    /// </summary>
+    public string KinectMode { get; set; } = "sdk";
 }
 
 /// <summary>
