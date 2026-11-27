@@ -77,6 +77,12 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new SettingsWindow(_bridge) { Owner = this };
+        window.ShowDialog();
+    }
+
     private void RecenterButton_Click(object sender, RoutedEventArgs e)
     {
         _bridge.Recenter();
@@ -175,6 +181,7 @@ public partial class MainWindow : Window
 
         FusionStatus.Text = _bridge.ActiveSource switch
         {
+            "Kinect+iPhone" => "Kinect (posición) + iPhone (rotación)",
             "Kinect" => "Kinect v1 (esqueleto) · prioridad",
             "iPhone" => "iPhone TrueDepth",
             _ => "Sin fuente de tracking"

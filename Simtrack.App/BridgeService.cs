@@ -55,9 +55,11 @@ public sealed class BridgeService : IDisposable
     private IPAddress? _lastAddress;
 
     private string _activeSource = "ninguna";
+    private string _fusionMode = "auto";
     private string _loggedSource = "ninguna";
     private bool _kinectConnectedLogged;
     private System.Diagnostics.Process? _kinectProcess;
+    private DateTime _lastKinectWatchdog = DateTime.MinValue;
 
     private const string SettingsFileName = "simtrack.settings.json";
 
@@ -92,6 +94,30 @@ public sealed class BridgeService : IDisposable
     }
 
     public DateTime LastWriteAt => _writer.LastWriteAt;
+
+    /// <summary>Ajustes en uso (los mismos para Kinect e iPhone).</summary>
+    public PoseSettings Settings => _fusionIphone.Settings;
+
+    /// <summary>Copia los ajustes a todas las fuentes y los guarda en disco.</summary>
+    public void ApplyCalibration()
+    {
+        CopySettings(_fusionIphone.Settings, _fusionKinect.Settings);
+        SaveSettingsToDisk();
+        Log("Calibracion aplicada: " + JsonSerializer.Serialize(_fusionIphone.Settings));
+    }
+
+    private void SaveSettingsToDisk()
+    {
+        try
+        {
+            string path = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
+            File.WriteAllText(path, JsonSerializer.Serialize(_fusionIphone.Settings, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            Log($"No se pudieron guardar los ajustes: {ex.Message}");
+        }
+    }
 
     /// <summary>Kinect manda si tiene datos frescos; si no, el iPhone.</summary>
     private PoseFusion ActiveFusion => _fusionKinect.HasFreshPose ? _fusionKinect : _fusionIphone;
@@ -240,6 +266,23 @@ public sealed class BridgeService : IDisposable
         }
     }
 
+    private void EnsureKinectHostAlive()
+    {
+        try
+        {
+            if (_kinectProcess != null && _kinectProcess.HasExited)
+            {
+                Log("Kinect: el puente se ha cerrado; reiniciando.");
+                _kinectProcess.Dispose();
+                _kinectProcess = null;
+                TryStartKinectHost();
+            }
+        }
+        catch
+        {
+        }
+    }
+
     private void StopKinectHost()
     {
         try
@@ -344,7 +387,14 @@ public sealed class BridgeService : IDisposable
                 bool kinectFresh = _fusionKinect.HasFreshPose;
                 bool iphoneFresh = _fusionIphone.HasFreshPose;
 
-                string source = kinectFresh ? "Kinect" : (iphoneFresh ? "iPhone" : "ninguna");
+                string source;
+
+                if (_fusionMode == "kinect")
+                    source = kinectFresh ? "Kinect" : (iphoneFresh ? "iPhone" : "ninguna");
+                else if (_fusionMode == "iphone")
+                    source = iphoneFresh ? "iPhone" : (kinectFresh ? "Kinect" : "ninguna");
+                else
+                    source = kinectFresh && iphoneFresh ? "Kinect+iPhone" : (kinectFresh ? "Kinect" : (iphoneFresh ? "iPhone" : "ninguna"));
 
                 lock (_gate)
                 {
@@ -364,9 +414,31 @@ public sealed class BridgeService : IDisposable
                 _iphone.Connected = iphoneFresh;
                 _iphone.SampleRateHz = iphoneFresh ? 60 : 0;
 
-                PoseSample pose = kinectFresh
-                    ? _fusionKinect.CurrentPose
-                    : _fusionIphone.CurrentPose;
+                PoseSample kinectPose = _fusionKinect.CurrentPose;
+                PoseSample iphonePose = _fusionIphone.CurrentPose;
+
+                PoseSample pose;
+
+                if (source == "Kinect+iPhone")
+                {
+                    // Posición del Kinect (muy estable) + rotación del iPhone
+                    // (TrueDepth sí da yaw/pitch/roll fiables).
+                    pose = new PoseSample(
+                        iphonePose.Yaw,
+                        iphonePose.Pitch,
+                        iphonePose.Roll,
+                        kinectPose.X,
+                        kinectPose.Y,
+                        kinectPose.Z);
+                }
+                else if (source == "Kinect")
+                {
+                    pose = kinectPose;
+                }
+                else
+                {
+                    pose = iphonePose;
+                }
 
                 _writer.Write(pose);
 
@@ -386,6 +458,12 @@ public sealed class BridgeService : IDisposable
                     }
 
                     _rateWindowStart = now;
+                }
+
+                if ((now - _lastKinectWatchdog).TotalSeconds >= 5)
+                {
+                    _lastKinectWatchdog = now;
+                    EnsureKinectHostAlive();
                 }
 
                 if ((now - _lastTelemetry).TotalMilliseconds >= 200)
@@ -466,6 +544,7 @@ public sealed class BridgeService : IDisposable
             }
 
             CopySettings(template, _fusionKinect.Settings);
+            _fusionMode = template.FusionMode ?? "auto";
         }
         catch (Exception ex)
         {
@@ -483,6 +562,7 @@ public sealed class BridgeService : IDisposable
         to.InvertRoll = from.InvertRoll;
         to.RotationSmoothing = from.RotationSmoothing;
         to.PositionSmoothing = from.PositionSmoothing;
+        to.FusionMode = from.FusionMode;
     }
 
     private void Log(string message)

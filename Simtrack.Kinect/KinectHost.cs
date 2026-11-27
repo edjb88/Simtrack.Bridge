@@ -5,14 +5,16 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Kinect;
+using Microsoft.Kinect.Toolkit.FaceTracking;
 
 namespace Simtrack.Kinect
 {
     /// <summary>
     /// Puente Kinect v1 -> Simtrack Bridge.
-    /// Lee el esqueleto y la orientacion del hueso de la cabeza y manda la pose
-    /// por UDP al puerto 4246, en el mismo formato de 48 bytes que el iPhone:
-    /// 6 double little-endian = X, Y, Z (cm) + Yaw, Pitch, Roll (grados).
+    ///
+    /// Posicion: esqueleto (cm). Rotacion: Face Tracking SDK (yaw/pitch/roll),
+    /// con el hueso de la cabeza como respaldo.
+    /// Envia 48 bytes (6 double) por UDP 4246: X, Y, Z, Yaw, Pitch, Roll.
     /// </summary>
     internal static class KinectHost
     {
@@ -22,30 +24,63 @@ namespace Simtrack.Kinect
         private static readonly IPEndPoint Target = new IPEndPoint(IPAddress.Loopback, PosePort);
 
         private static KinectSensor _sensor;
+        private static FaceTracker _faceTracker;
+
+        private static readonly ColorImageFormat ColorFormat = ColorImageFormat.RgbResolution640x480Fps30;
+        private static readonly DepthImageFormat DepthFormat = DepthImageFormat.Resolution320x240Fps30;
+
+        private static byte[] _colorPixels;
+        private static short[] _depthPixels;
+        private static bool _haveColor;
+        private static bool _haveDepth;
+
+        private static Skeleton _skeleton;
+        private static readonly object Gate = new object();
+
         private static long _frames;
         private static long _poses;
-        private static long _positionOnly;
+        private static long _faceFrames;
+        private static long _faceFailures;
         private static DateTime _lastReport = DateTime.UtcNow;
+        private static DateTime _lastPose = DateTime.MinValue;
+        private static DateTime _lastFaceOk = DateTime.MinValue;
+
         private static bool _verbose = true;
+        private static bool _faceEnabled = true;
         private static bool _snapshotDone;
         private static string _snapshotPath;
         private static int? _setAngle;
         private static string _depthPath;
-        private static string _mode = "seated";
-        private static string _logPath;
         private static bool _depthDone;
         private static long _depthFrames;
+        private static string _mode = "seated";
+        private static string _logPath;
+
+        private static double _baseYaw;
+        private static double _basePitch;
+        private static double _baseRoll;
+        private static bool _hasRotationBase;
+        private static double _baseRotationYaw;
+        private static double _baseRotationPitch;
+        private static double _baseRotationRoll;
+        private static bool _hasBoneBase;
+        private static double[] _baseBoneMatrix;
 
         private static int Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-            if (args != null)
+            if (args != null && args.Length > 0)
             {
-                foreach (string arg in args)
+                for (var i = 0; i < args.Length; i++)
                 {
+                    string arg = args[i];
+
                     if (arg == "--quiet")
                         _verbose = false;
+
+                    if (arg == "--no-face")
+                        _faceEnabled = false;
 
                     if (arg.StartsWith("--snapshot="))
                         _snapshotPath = arg.Substring("--snapshot=".Length);
@@ -60,11 +95,7 @@ namespace Simtrack.Kinect
                         _mode = arg.Substring("--mode=".Length);
 
                     if (arg.StartsWith("--set-angle="))
-                    {
-                        int angle;
-                        if (int.TryParse(arg.Substring("--set-angle=".Length), out angle))
-                            _setAngle = angle;
-                    }
+                        _setAngle = int.Parse(arg.Substring("--set-angle=".Length));
                 }
             }
 
@@ -81,7 +112,7 @@ namespace Simtrack.Kinect
                 }
             }
 
-            Console.WriteLine("Simtrack Kinect host v0.2 (Kinect SDK 1.8)");
+            Console.WriteLine("Simtrack Kinect host v0.3 (SDK 1.8 + Face Tracking)");
 
             var sensors = KinectSensor.KinectSensors;
 
@@ -96,14 +127,8 @@ namespace Simtrack.Kinect
             Console.WriteLine("Estado inicial: " + _sensor.Status);
 
             if (_setAngle.HasValue)
-            {
                 return SetElevation(_setAngle.Value);
-            }
 
-            // Modo sentado: en un escritorio no se ve el cuerpo completo.
-            // OJO: el "near range" solo existe en Kinect for Windows; con un
-            // Kinect de Xbox 360 lanza "feature not supported", asi que se usa
-            // el rango normal (0,8 - 4 m).
             _sensor.SkeletonStream.TrackingMode = _mode == "standing"
                 ? SkeletonTrackingMode.Default
                 : SkeletonTrackingMode.Seated;
@@ -117,25 +142,46 @@ namespace Simtrack.Kinect
                 MaxDeviationRadius = 0.04f
             });
 
-            Console.WriteLine("TrackingMode real: " + _sensor.SkeletonStream.TrackingMode);
-            Console.WriteLine("DepthRange real: " + _sensor.DepthStream.Range);
-
             _sensor.SkeletonFrameReady += OnSkeletonFrame;
 
-            if (_snapshotPath != null)
+            if (_faceEnabled)
             {
-                _sensor.ColorStream.Enable(ColorImageFormat.RgbResolution640x480Fps30);
+                _sensor.ColorStream.Enable(ColorFormat);
+                _sensor.DepthStream.Enable(DepthFormat);
+
+                _sensor.ColorFrameReady += OnColorFrame;
+                _sensor.DepthFrameReady += OnDepthFrame;
+            }
+
+            if (_snapshotPath != null && !_faceEnabled)
+            {
+                _sensor.ColorStream.Enable(ColorFormat);
                 _sensor.ColorFrameReady += OnColorFrame;
             }
 
-            if (_depthPath != null)
+            if (_depthPath != null && !_faceEnabled)
             {
-                _sensor.DepthStream.Enable(DepthImageFormat.Resolution640x480Fps30);
+                _sensor.DepthStream.Enable(DepthFormat);
                 _sensor.DepthFrameReady += OnDepthFrame;
             }
 
             _sensor.Start();
             Console.WriteLine("Kinect iniciado. Enviando pose a 127.0.0.1:" + PosePort + ". Ctrl+C para salir.");
+
+            if (_faceEnabled)
+            {
+                try
+                {
+                    System.Threading.Thread.Sleep(500);
+                    _faceTracker = new FaceTracker(_sensor);
+                    Console.WriteLine("Face Tracking: activado.");
+                }
+                catch (Exception ex)
+                {
+                    _faceTracker = null;
+                    Console.WriteLine("Face Tracking no disponible: " + ex.Message);
+                }
+            }
 
             while (true)
             {
@@ -152,19 +198,22 @@ namespace Simtrack.Kinect
                 return;
 
             Console.WriteLine(string.Format(
-                "estado={0} frames={1} sentados={2} poses={3} depth={5} ({4} Hz)",
+                "estado={0} frames={1} poses={2} cara={3} fallos={4} ({5} Hz)",
                 _sensor == null ? "?" : _sensor.Status.ToString(),
                 _frames,
-                _positionOnly,
                 _poses,
-                (int)(_poses / seconds),
-                _depthFrames));
+                _faceFrames,
+                _faceFailures,
+                (int)(_poses / seconds)));
 
             _lastReport = DateTime.UtcNow;
             _frames = 0;
             _poses = 0;
-            _positionOnly = 0;
+            _faceFrames = 0;
+            _faceFailures = 0;
         }
+
+        // MARK: esqueleto
 
         private static void OnSkeletonFrame(object sender, SkeletonFrameReadyEventArgs e)
         {
@@ -178,127 +227,359 @@ namespace Simtrack.Kinect
                 var skeletons = new Skeleton[frame.SkeletonArrayLength];
                 frame.CopySkeletonDataTo(skeletons);
 
-                Skeleton skeleton = null;
+                Skeleton found = null;
 
                 foreach (Skeleton candidate in skeletons)
                 {
                     if (candidate.TrackingState == SkeletonTrackingState.Tracked)
                     {
-                        skeleton = candidate;
+                        found = candidate;
                         break;
                     }
-
-                    if (candidate.TrackingState == SkeletonTrackingState.PositionOnly)
-                        _positionOnly++;
                 }
 
-                if (skeleton == null)
+                if (found == null)
                     return;
 
-                Joint head = skeleton.Joints[JointType.Head];
+                lock (Gate)
+                {
+                    _skeleton = found;
+                }
+
+                Joint head = found.Joints[JointType.Head];
 
                 if (head.TrackingState == JointTrackingState.NotTracked)
                     return;
 
-                // Posicion en metros (sistema del sensor) -> centimetros.
-                double x = head.Position.X * 100.0;
-                double y = head.Position.Y * 100.0;
-                double z = head.Position.Z * 100.0;
-
-                double yaw = 0.0;
-                double pitch = 0.0;
-                double roll = 0.0;
-
-                BoneOrientationCollection orientations = skeleton.BoneOrientations;
-
-                if (orientations != null && orientations.Count > 0)
+                // Sin cara (o si falla), se usa el hueso de la cabeza como respaldo.
+                if (_faceTracker == null || (DateTime.UtcNow - _lastFaceOk).TotalMilliseconds > 1000)
                 {
-                    BoneOrientation headBone = orientations[JointType.Head];
-                    Matrix4 rotation = headBone.AbsoluteRotation.Matrix;
+                    double yaw;
+                    double pitch;
+                    double roll;
+                    BoneRotation(found, out yaw, out pitch, out roll);
 
-                    // Ejes del hueso expresados en el sistema del sensor.
-                    double fx = rotation.M13;
-                    double fy = rotation.M23;
-                    double fz = rotation.M33;
-
-                    double ux = rotation.M12;
-                    double uy = rotation.M22;
-
-                    yaw = Math.Atan2(fx, -fz) * 180.0 / Math.PI;
-                    pitch = Math.Asin(Clamp(fy, -1.0, 1.0)) * 180.0 / Math.PI;
-                    roll = Math.Atan2(ux, uy) * 180.0 / Math.PI;
-                }
-
-                Send(x, y, z, yaw, pitch, roll);
-                _poses++;
-
-                if (_verbose && (_poses % 30) == 0)
-                {
-                    Console.WriteLine(string.Format(
-                        "head X={0,6:F1} Y={1,6:F1} Z={2,6:F1} cm  yaw={3,6:F1} pitch={4,6:F1} roll={5,6:F1}",
-                        x, y, z, yaw, pitch, roll));
+                    SendPose(head, yaw, pitch, roll);
                 }
             }
         }
 
+        // MARK: color / profundidad
+
         private static void OnColorFrame(object sender, ColorImageFrameReadyEventArgs e)
         {
-            if (_snapshotDone)
-                return;
-
             using (ColorImageFrame frame = e.OpenColorImageFrame())
             {
                 if (frame == null)
                     return;
 
-                try
+                if (_colorPixels == null || _colorPixels.Length != frame.PixelDataLength)
+                    _colorPixels = new byte[frame.PixelDataLength];
+
+                frame.CopyPixelDataTo(_colorPixels);
+                _haveColor = true;
+
+                if (_snapshotPath != null && !_snapshotDone)
+                    SaveColor(frame, _colorPixels);
+
+            }
+        }
+
+        private static void OnDepthFrame(object sender, DepthImageFrameReadyEventArgs e)
+        {
+            using (DepthImageFrame frame = e.OpenDepthImageFrame())
+            {
+                if (frame == null)
+                    return;
+
+                _depthFrames++;
+
+                if (_depthPixels == null || _depthPixels.Length != frame.PixelDataLength)
+                    _depthPixels = new short[frame.PixelDataLength];
+
+                frame.CopyPixelDataTo(_depthPixels);
+                _haveDepth = true;
+
+                if (_facePathPending())
+                    SaveDepth(frame, _depthPixels);
+
+                if (_faceTracker != null)
+                    ProcessFace();
+            }
+        }
+
+        private static bool _facePathPending()
+        {
+            return _depthPath != null && !_depthDone;
+        }
+
+        // MARK: face tracking
+
+        private static void ProcessFace()
+        {
+            if (_faceTracker == null || !_haveColor || !_haveDepth)
+                return;
+
+            Skeleton skeleton;
+
+            lock (Gate)
+            {
+                skeleton = _skeleton;
+            }
+
+            if (skeleton == null)
+                return;
+
+            try
+            {
+                FaceTrackFrame frame = _faceTracker.Track(ColorFormat, _colorPixels, DepthFormat, _depthPixels, skeleton);
+
+                if (frame == null)
                 {
-                    int width = frame.Width;
-                    int height = frame.Height;
-                    var pixels = new byte[frame.PixelDataLength];
+                    _faceFailures++;
+                    return;
+                }
 
-                    frame.CopyPixelDataTo(pixels);
-
-                    using (var bitmap = new Bitmap(width, height, PixelFormat.Format32bppRgb))
+                using (frame)
+                {
+                    if (!frame.TrackSuccessful)
                     {
-                        Rectangle rectangle = new Rectangle(0, 0, width, height);
-                        BitmapData data = bitmap.LockBits(rectangle, ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
+                        _faceFailures++;
+                        return;
+                    }
 
-                        try
+                    _faceFrames++;
+                    _lastFaceOk = DateTime.UtcNow;
+
+                    Vector3DF rotation = frame.Rotation;
+
+                    double pitch = rotation.X * 180.0 / Math.PI;
+                    double yaw = rotation.Y * 180.0 / Math.PI;
+                    double roll = rotation.Z * 180.0 / Math.PI;
+
+                    Joint head = skeleton.Joints[JointType.Head];
+                    SendPose(head, yaw, pitch, roll);
+                }
+            }
+            catch (Exception)
+            {
+                // El FaceTracker nativo puede lanzar si no soporta el sensor;
+                // se cuenta como fallo y se usa el respaldo del hueso.
+                _faceFailures++;
+                _lastFaceOk = DateTime.MinValue;
+            }
+        }
+
+        private static void BoneRotation(Skeleton skeleton, out double yaw, out double pitch, out double roll)
+        {
+            yaw = 0;
+            pitch = 0;
+            roll = 0;
+
+            BoneOrientationCollection orientations = skeleton.BoneOrientations;
+
+            if (orientations == null || orientations.Count == 0)
+                return;
+
+            Matrix4 rotation = orientations[JointType.Head].AbsoluteRotation.Matrix;
+
+            var current = new double[]
+            {
+                rotation.M11, rotation.M12, rotation.M13,
+                rotation.M21, rotation.M22, rotation.M23,
+                rotation.M31, rotation.M32, rotation.M33
+            };
+
+            if (_baseBoneMatrix == null)
+                _baseBoneMatrix = current;
+
+            var relative = new double[9];
+
+            for (var row = 0; row < 3; row++)
+            {
+                for (var col = 0; col < 3; col++)
+                {
+                    double sum = 0;
+
+                    for (var k = 0; k < 3; k++)
+                        sum += _baseBoneMatrix[k * 3 + row] * current[k * 3 + col];
+
+                    relative[row * 3 + col] = sum;
+                }
+            }
+
+            yaw = Math.Atan2(relative[3], relative[0]) * 180.0 / Math.PI;
+            pitch = Math.Asin(Clamp(-relative[6], -1, 1)) * 180.0 / Math.PI;
+            roll = Math.Atan2(relative[7], relative[8]) * 180.0 / Math.PI;
+        }
+
+        // MARK: envio
+
+        private static void SendPose(Joint head, double yaw, double pitch, double roll)
+        {
+            // Primera pose = cero de rotacion (para que el juego arranque centrado).
+            if (!_hasRotationBase)
+            {
+                _baseYaw = yaw;
+                _basePitch = pitch;
+                _baseRoll = roll;
+                _hasRotationBase = true;
+            }
+
+            double outYaw = Normalize(yaw - _baseYaw);
+            double outPitch = Normalize(pitch - _basePitch);
+            double outRoll = Normalize(roll - _baseRoll);
+
+            double x = head.Position.X * 100.0;
+            double y = head.Position.Y * 100.0;
+            double z = head.Position.Z * 100.0;
+
+            // Sin cara fiable se usa el hueso, que ya viene relativo.
+            if (_faceTracker == null || (DateTime.UtcNow - _lastFaceOk).TotalMilliseconds > 1000)
+            {
+                outYaw = yaw;
+                outPitch = pitch;
+                outRoll = roll;
+            }
+
+            var data = new byte[48];
+            var values = new double[] { x, y, z, outYaw, outPitch, outRoll };
+
+            for (var i = 0; i < values.Length; i++)
+            {
+                byte[] bytes = BitConverter.GetBytes(values[i]);
+
+                if (!BitConverter.IsLittleEndian)
+                    Array.Reverse(bytes);
+
+                Buffer.BlockCopy(bytes, 0, data, i * 8, 8);
+            }
+
+            try
+            {
+                Sender.Send(data, data.Length, Target);
+                _poses++;
+                _lastPose = DateTime.UtcNow;
+
+                if (_verbose && (_poses % 30) == 0)
+                {
+                    Console.WriteLine(string.Format(
+                        "pose X={0,6:F1} Y={1,6:F1} Z={2,6:F1} yaw={3,6:F1} pitch={4,6:F1} roll={5,6:F1}",
+                        x, y, z, outYaw, outPitch, outRoll));
+                }
+            }
+            catch (SocketException)
+            {
+            }
+        }
+
+        private static double Normalize(double angle)
+        {
+            while (angle > 180) angle -= 360;
+            while (angle < -180) angle += 360;
+            return angle;
+        }
+
+        // MARK: utilidades
+
+        private static void SaveColor(ColorImageFrame frame, byte[] pixels)
+        {
+            try
+            {
+                int width = frame.Width;
+                int height = frame.Height;
+
+                using (var bitmap = new Bitmap(width, height, PixelFormat.Format32bppRgb))
+                {
+                    BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
+                    var line = new byte[width * 4];
+
+                    try
+                    {
+                        for (var y2 = 0; y2 < height; y2++)
                         {
-                            var line = new byte[width * 4];
+                            Buffer.BlockCopy(pixels, y2 * width * 4, line, 0, width * 4);
 
-                            for (int y = 0; y < height; y++)
+                            for (var x2 = 0; x2 < width; x2++)
                             {
-                                Buffer.BlockCopy(pixels, y * width * 4, line, 0, width * 4);
+                                byte r = line[x2 * 4];
+                                line[x2 * 4] = line[x2 * 4 + 2];
+                                line[x2 * 4 + 2] = r;
+                            }
 
-                                // El Kinect entrega RGBX; System.Drawing espera BGRX.
-                                for (int x = 0; x < width; x++)
+                            IntPtr destination = new IntPtr(data.Scan0.ToInt64() + (long)y2 * data.Stride);
+                            System.Runtime.InteropServices.Marshal.Copy(line, 0, destination, line.Length);
+                        }
+                    }
+                    finally
+                    {
+                        bitmap.UnlockBits(data);
+                    }
+
+                    bitmap.Save(_snapshotPath, ImageFormat.Png);
+                    _snapshotDone = true;
+                    Console.WriteLine("Snapshot guardado en " + _snapshotPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("No se pudo guardar la imagen: " + ex.Message);
+                _snapshotDone = true;
+            }
+        }
+
+        private static void SaveDepth(DepthImageFrame frame, short[] pixels)
+        {
+            try
+            {
+                int width = frame.Width;
+                int height = frame.Height;
+
+                using (var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+                {
+                    BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+                    var line = new byte[width * 3];
+
+                    try
+                    {
+                        for (var y2 = 0; y2 < height; y2++)
+                        {
+                            for (var x2 = 0; x2 < width; x2++)
+                            {
+                                int millimeters = pixels[y2 * width + x2] >> 3;
+                                byte gray = 0;
+
+                                if (millimeters > 0)
                                 {
-                                    byte r = line[x * 4];
-                                    line[x * 4] = line[x * 4 + 2];
-                                    line[x * 4 + 2] = r;
+                                    int value = 255 - (millimeters - 400) * 255 / 2600;
+                                    if (value < 0) value = 0;
+                                    if (value > 255) value = 255;
+                                    gray = (byte)value;
                                 }
 
-                                IntPtr destination = new IntPtr(data.Scan0.ToInt64() + (long)y * data.Stride);
-                                System.Runtime.InteropServices.Marshal.Copy(line, 0, destination, line.Length);
+                                line[x2 * 3] = gray;
+                                line[x2 * 3 + 1] = gray;
+                                line[x2 * 3 + 2] = gray;
                             }
-                        }
-                        finally
-                        {
-                            bitmap.UnlockBits(data);
-                        }
 
-                        bitmap.Save(_snapshotPath, ImageFormat.Png);
-                        _snapshotDone = true;
-                        Console.WriteLine("Snapshot guardado en " + _snapshotPath);
+                            IntPtr destination = new IntPtr(data.Scan0.ToInt64() + (long)y2 * data.Stride);
+                            System.Runtime.InteropServices.Marshal.Copy(line, 0, destination, line.Length);
+                        }
                     }
+                    finally
+                    {
+                        bitmap.UnlockBits(data);
+                    }
+
+                    bitmap.Save(_depthPath, ImageFormat.Png);
+                    _depthDone = true;
+                    Console.WriteLine("Profundidad guardada en " + _depthPath);
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("No se pudo guardar la imagen: " + ex.Message);
-                    _snapshotDone = true;
-                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("No se pudo guardar la profundidad: " + ex.Message);
+                _depthDone = true;
             }
         }
 
@@ -320,104 +601,6 @@ namespace Simtrack.Kinect
             {
                 Console.WriteLine("No se pudo ajustar el motor: " + ex.Message);
                 return 2;
-            }
-        }
-
-        private static void OnDepthFrame(object sender, DepthImageFrameReadyEventArgs e)
-        {
-            using (DepthImageFrame frame = e.OpenDepthImageFrame())
-            {
-                if (frame == null)
-                    return;
-
-                _depthFrames++;
-
-                if (_depthDone)
-                    return;
-
-                try
-                {
-                    int width = frame.Width;
-                    int height = frame.Height;
-                    var raw = new short[frame.PixelDataLength];
-                    frame.CopyPixelDataTo(raw);
-
-                    short min = short.MaxValue;
-                    short max = 0;
-
-                    using (var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb))
-                    {
-                        BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
-
-                        try
-                        {
-                            var line = new byte[width * 3];
-
-                            for (int y = 0; y < height; y++)
-                            {
-                                for (int x = 0; x < width; x++)
-                                {
-                                    int millimeters = raw[y * width + x] >> 3;
-                                    byte gray = 0;
-
-                                    if (millimeters > 0)
-                                    {
-                                        if (millimeters < min) min = (short)millimeters;
-                                        if (millimeters > max) max = (short)millimeters;
-
-                                        int value = 255 - (millimeters - 400) * 255 / 2600;
-                                        if (value < 0) value = 0;
-                                        if (value > 255) value = 255;
-                                        gray = (byte)value;
-                                    }
-
-                                    line[x * 3] = gray;
-                                    line[x * 3 + 1] = gray;
-                                    line[x * 3 + 2] = gray;
-                                }
-
-                                IntPtr destination = new IntPtr(data.Scan0.ToInt64() + (long)y * data.Stride);
-                                System.Runtime.InteropServices.Marshal.Copy(line, 0, destination, line.Length);
-                            }
-                        }
-                        finally
-                        {
-                            bitmap.UnlockBits(data);
-                        }
-
-                        bitmap.Save(_depthPath, ImageFormat.Png);
-                        _depthDone = true;
-                        Console.WriteLine("Profundidad guardada en " + _depthPath + " (min " + min + " mm, max " + max + " mm)");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("No se pudo guardar la profundidad: " + ex.Message);
-                    _depthDone = true;
-                }
-            }
-        }
-        private static void Send(double x, double y, double z, double yaw, double pitch, double roll)
-        {
-            var data = new byte[48];
-            var values = new double[] { x, y, z, yaw, pitch, roll };
-
-            for (int i = 0; i < values.Length; i++)
-            {
-                byte[] bytes = BitConverter.GetBytes(values[i]);
-
-                if (!BitConverter.IsLittleEndian)
-                    Array.Reverse(bytes);
-
-                Buffer.BlockCopy(bytes, 0, data, i * 8, 8);
-            }
-
-            try
-            {
-                Sender.Send(data, data.Length, Target);
-            }
-            catch (SocketException)
-            {
             }
         }
 

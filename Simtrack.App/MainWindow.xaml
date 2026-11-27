@@ -79,7 +79,8 @@
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
                 <Ellipse x:Name="ConnectionIndicator" Width="12" Height="12" Fill="#E05252" Margin="0,0,8,0"/>
                 <TextBlock x:Name="ConnectionText" Text="ESPERANDO IPHONE" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                <Button x:Name="RecenterButton" Content="RECENTRAR" Margin="18,0,0,0" Click="RecenterButton_Click"/>
+                <Button x:Name="SettingsButton" Content="AJUSTES" Margin="18,0,0,0" Click="SettingsButton_Click"/>
+                <Button x:Name="RecenterButton" Content="RECENTRAR" Margin="8,0,0,0" Click="RecenterButton_Click"/>
                 <Button x:Name="ToggleButton" Content="DETENER" Margin="8,0,0,0" Click="ToggleButton_Click"/>
             </StackPanel>
         </Grid>

@@ -23,6 +23,12 @@ public sealed class PoseSettings
 
     /// <summary>Suavizado exponencial aplicado a la posición.</summary>
     public double PositionSmoothing { get; set; } = 0.25;
+
+    /// <summary>
+    /// Modo de fusión: "auto" (posición del Kinect + rotación del iPhone si
+    /// están los dos), "kinect" (todo del Kinect) o "iphone" (todo del iPhone).
+    /// </summary>
+    public string FusionMode { get; set; } = "auto";
 }
 
 /// <summary>
@@ -45,6 +51,7 @@ public sealed class PoseFusion
     private PoseSample _raw = PoseSample.Zero;
     private PoseSample _smoothed = PoseSample.Zero;
     private PoseSample _recenterOffset = PoseSample.Zero;
+    private bool _baselineCaptured;
 
     private long _sampleCount;
     private DateTime _lastSampleAt = DateTime.MinValue;
@@ -140,6 +147,14 @@ public sealed class PoseFusion
                 LowPass(_smoothed.Y, sample.Y, positionAlpha),
                 LowPass(_smoothed.Z, sample.Z, positionAlpha));
 
+            if (!_baselineCaptured)
+            {
+                // Primera muestra: se toma como cero para que la pose empiece
+                // centrada (el Kinect manda coordenadas absolutas del sensor).
+                _recenterOffset = _smoothed;
+                _baselineCaptured = true;
+            }
+
             _sampleCount++;
             _lastSampleAt = DateTime.UtcNow;
         }
@@ -155,6 +170,7 @@ public sealed class PoseFusion
         lock (_gate)
         {
             _recenterOffset = _smoothed;
+            _baselineCaptured = true;
         }
     }
 
