@@ -55,6 +55,9 @@ namespace Simtrack.Kinect
         private static long _depthFrames;
         private static string _mode = "seated";
         private static string _logPath;
+        private static bool _motorCalibrate;
+        private static int _motorScore;
+        private static bool _motorCollect;
 
         private static double _baseYaw;
         private static double _basePitch;
@@ -78,6 +81,9 @@ namespace Simtrack.Kinect
 
                     if (arg == "--quiet")
                         _verbose = false;
+
+                    if (arg == "--motor-calibrate")
+                        _motorCalibrate = true;
 
                     if (arg == "--no-face")
                         _faceEnabled = false;
@@ -128,6 +134,9 @@ namespace Simtrack.Kinect
 
             if (_setAngle.HasValue)
                 return SetElevation(_setAngle.Value);
+
+            if (_motorCalibrate)
+                return MotorCalibrate();
 
             _sensor.SkeletonStream.TrackingMode = _mode == "standing"
                 ? SkeletonTrackingMode.Default
@@ -240,6 +249,9 @@ namespace Simtrack.Kinect
 
                 if (found == null)
                     return;
+
+                if (_motorCollect)
+                    _motorScore++;
 
                 lock (Gate)
                 {
@@ -583,6 +595,88 @@ namespace Simtrack.Kinect
             }
         }
 
+        private static int MotorCalibrate()
+        {
+            Console.WriteLine("Calibrando motor del Kinect (barrido de inclinacion)...");
+
+            _sensor.SkeletonStream.TrackingMode = SkeletonTrackingMode.Seated;
+            _sensor.SkeletonStream.Enable();
+
+            try
+            {
+                _sensor.Start();
+                System.Threading.Thread.Sleep(1800);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("No se pudo arrancar el sensor: " + ex.Message);
+                return 3;
+            }
+
+            int startAngle = 0;
+
+            try
+            {
+                startAngle = _sensor.ElevationAngle;
+            }
+            catch
+            {
+            }
+
+            int[] angles = { -25, -20, -15, -10, -5, 0, 5, 10, 15, 20 };
+            int bestAngle = startAngle;
+            int bestScore = -1;
+
+            foreach (int angle in angles)
+            {
+                try
+                {
+                    _sensor.ElevationAngle = angle;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Angulo " + angle + ": no se pudo mover (" + ex.Message + ")");
+                    continue;
+                }
+
+                System.Threading.Thread.Sleep(1100);
+
+                _motorScore = 0;
+                _motorCollect = true;
+                System.Threading.Thread.Sleep(1100);
+                _motorCollect = false;
+
+                Console.WriteLine("Angulo " + angle + ": esqueletos " + _motorScore);
+
+                if (_motorScore > bestScore)
+                {
+                    bestScore = _motorScore;
+                    bestAngle = angle;
+                }
+            }
+
+            try
+            {
+                // Si no ha visto a nadie, se deja el sensor como estaba.
+                _sensor.ElevationAngle = bestScore > 0 ? bestAngle : startAngle;
+                System.Threading.Thread.Sleep(900);
+            }
+            catch
+            {
+            }
+
+            Console.WriteLine("MOTOR_OK angulo=" + bestAngle + " esqueletos=" + bestScore);
+
+            try
+            {
+                _sensor.Stop();
+            }
+            catch
+            {
+            }
+
+            return bestScore > 0 ? 0 : 2;
+        }
         private static int SetElevation(int degrees)
         {
             int target = Math.Max(-27, Math.Min(27, degrees));

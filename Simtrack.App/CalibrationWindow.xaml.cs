@@ -45,6 +45,7 @@ public partial class CalibrationWindow : Window
     private double _elapsed;
     private DateTime _lastTick = DateTime.UtcNow;
     private bool _finished;
+    private bool _motorPhase;
 
     private double _yawLeft;
     private double _yawRight;
@@ -91,6 +92,62 @@ public partial class CalibrationWindow : Window
         _timer.Tick += Timer_Tick;
         _timer.Start();
 
+        _lastTick = DateTime.UtcNow;
+        StartMotorPhase();
+    }
+
+    /// <summary>
+    /// Antes de calificar al usuario se barre el motor del Kinect para
+    /// encuadrarlo. Si no hay Kinect, se salta sin molestar.
+    /// </summary>
+    private void StartMotorPhase()
+    {
+        if (!_bridge.KinectPacketsFresh && !_bridge.HasKinectBridge)
+        {
+            BeginStep();
+            return;
+        }
+
+        _motorPhase = true;
+
+        InstructionText.Text = "CALIBRANDO MOTORES";
+        InstructionText.Foreground = Warm;
+        DetailText.Text = "Moviendo el sensor del Kinect para encuadrarte. No te muevas todavía.";
+        CountdownText.Text = "…";
+        StepProgress.IsIndeterminate = true;
+        LiveValueText.Text = string.Empty;
+        StepCounterText.Text = "Paso previo";
+        HintText.Text = "Barrido automático de inclinación. Tarda unos 20 segundos.";
+
+        for (var i = 0; i < _dots.Count; i++)
+            _dots[i].Fill = Muted;
+
+        Task.Run(() => _bridge.CalibrateKinectMotors())
+            .ContinueWith(task =>
+            {
+                Dispatcher.Invoke(() => EndMotorPhase(task.Result));
+            });
+    }
+
+    private void EndMotorPhase((bool ok, string detail) result)
+    {
+        _motorPhase = false;
+        StepProgress.IsIndeterminate = false;
+        InstructionText.Foreground = Brushes.White;
+        HintText.Text = "Sigue las instrucciones. Sonará un pitido al completar cada paso.";
+
+        if (!result.ok)
+        {
+            InstructionText.Text = "NO TE HE ENCONTRADO";
+            DetailText.Text = result.detail;
+            CountdownText.Text = "!";
+            StepCounterText.Text = "Motor";
+            ResultMessage = result.detail;
+            Tone(420, 350);
+            return;
+        }
+
+        DetailText.Text = "Motor listo (" + result.detail + "). Empezamos.";
         _lastTick = DateTime.UtcNow;
         BeginStep();
     }
@@ -144,7 +201,7 @@ public partial class CalibrationWindow : Window
 
     private void Timer_Tick(object? sender, EventArgs e)
     {
-        if (_finished)
+        if (_finished || _motorPhase)
             return;
 
         DateTime now = DateTime.UtcNow;

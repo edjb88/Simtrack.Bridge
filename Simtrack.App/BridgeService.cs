@@ -88,6 +88,10 @@ public sealed class BridgeService : IDisposable
     public bool IphoneFresh => _fusionIphone.HasFreshPose;
     public bool KinectFresh => _fusionKinect.HasFreshPose;
 
+    public bool HasKinectBridge => FindKinectHostExe() != null;
+
+    public bool KinectPacketsFresh => _kinect.PacketsReceived > 0 && (DateTime.UtcNow - _kinect.LastPacketAt).TotalMilliseconds < 1500;
+
     public string ActiveSource
     {
         get { lock (_gate) { return _activeSource; } }
@@ -224,18 +228,92 @@ public sealed class BridgeService : IDisposable
         _discovery.LogReceived -= OnReceiverLog;
     }
 
+    private static string? FindKinectHostExe()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "Simtrack.KinectHost.exe"),
+            Path.Combine(AppContext.BaseDirectory, "Kinect", "Simtrack.KinectHost.exe")
+        };
+
+        return candidates.FirstOrDefault(File.Exists);
+    }
+
+    /// <summary>
+    /// Barrido del motor de inclinación: mueve el sensor y se queda con el
+    /// ángulo en el que detecta el esqueleto. Necesita el sensor para él solo,
+    /// así que para el puente y lo vuelve a arrancar al terminar.
+    /// </summary>
+    public (bool ok, string detail) CalibrateKinectMotors()
+    {
+        string? exe = FindKinectHostExe();
+
+        if (exe is null)
+            return (true, "Sin puente de Kinect instalado: se omite la calibración del motor.");
+
+        StopKinectHost();
+        Thread.Sleep(600);
+
+        string logPath = Path.Combine(AppContext.BaseDirectory, "kinect-motor.log");
+
+        try
+        {
+            if (File.Exists(logPath))
+                File.Delete(logPath);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var info = new System.Diagnostics.ProcessStartInfo(exe, "--motor-calibrate --log=\"" + logPath + "\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            var process = System.Diagnostics.Process.Start(info);
+
+            bool finished = process?.WaitForExit(60000) ?? false;
+
+            if (!finished)
+            {
+                try { process?.Kill(); } catch { }
+                return (false, "El motor del Kinect no respondió a tiempo.");
+            }
+
+            string text = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+
+            Log("Kinect motor: " + text.Replace("\r", " ").Replace("\n", " | "));
+
+            int marker = text.IndexOf("MOTOR_OK", StringComparison.OrdinalIgnoreCase);
+
+            if (marker < 0)
+                return (false, "No se pudo completar el barrido del motor.");
+
+            string summary = text.Substring(marker).Split('\n')[0].Trim();
+
+            return summary.Contains("esqueletos=0")
+                ? (false, "El sensor barrió todas las inclinaciones y no te detectó. Colócate a 1,3-1,5 m y repite.")
+                : (true, summary);
+        }
+        catch (Exception ex)
+        {
+            return (false, "Error calibrando el motor: " + ex.Message);
+        }
+        finally
+        {
+            TryStartKinectHost();
+        }
+    }
+
     /// <summary>Arranca el puente del Kinect si está junto al ejecutable.</summary>
     private void TryStartKinectHost()
     {
         try
         {
-            string[] candidates =
-            {
-                Path.Combine(AppContext.BaseDirectory, "Simtrack.KinectHost.exe"),
-                Path.Combine(AppContext.BaseDirectory, "Kinect", "Simtrack.KinectHost.exe")
-            };
-
-            string? exe = candidates.FirstOrDefault(File.Exists);
+            string? exe = FindKinectHostExe();
 
             if (exe is null)
             {
