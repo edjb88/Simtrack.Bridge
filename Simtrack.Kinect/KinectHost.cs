@@ -27,7 +27,7 @@ namespace Simtrack.Kinect
         private static FaceTracker _faceTracker;
 
         private static readonly ColorImageFormat ColorFormat = ColorImageFormat.RgbResolution640x480Fps30;
-        private static readonly DepthImageFormat DepthFormat = DepthImageFormat.Resolution320x240Fps30;
+        private static readonly DepthImageFormat DepthFormat = DepthImageFormat.Resolution640x480Fps30;
 
         private static byte[] _colorPixels;
         private static short[] _depthPixels;
@@ -41,6 +41,9 @@ namespace Simtrack.Kinect
         private static long _poses;
         private static long _faceFrames;
         private static long _faceFailures;
+        private static long _positionOnly;
+        private static long _roiNull;
+        private static long _faceTries;
         private static DateTime _lastReport = DateTime.UtcNow;
         private static DateTime _lastPose = DateTime.MinValue;
         private static DateTime _lastFaceOk = DateTime.MinValue;
@@ -67,6 +70,8 @@ namespace Simtrack.Kinect
         private static double _baseRotationPitch;
         private static double _baseRotationRoll;
         private static bool _hasBoneBase;
+        private static DateTime _lastRoiLog = DateTime.MinValue;
+        private static DateTime _lastSkeletonAt = DateTime.MinValue;
         private static double[] _baseBoneMatrix;
 
         private static int Main(string[] args)
@@ -151,6 +156,8 @@ namespace Simtrack.Kinect
                 MaxDeviationRadius = 0.04f
             });
 
+            Console.WriteLine("TrackingMode=" + _sensor.SkeletonStream.TrackingMode);
+
             _sensor.SkeletonFrameReady += OnSkeletonFrame;
 
             if (_faceEnabled)
@@ -207,19 +214,25 @@ namespace Simtrack.Kinect
                 return;
 
             Console.WriteLine(string.Format(
-                "estado={0} frames={1} poses={2} cara={3} fallos={4} ({5} Hz)",
+                "estado={0} frames={1} poses={2} cara={3} fallos={4} soloPos={6} roiNull={7} tries={8} ({5} Hz)",
                 _sensor == null ? "?" : _sensor.Status.ToString(),
                 _frames,
                 _poses,
                 _faceFrames,
                 _faceFailures,
-                (int)(_poses / seconds)));
+                (int)(_poses / seconds),
+                _positionOnly,
+                _roiNull,
+                _faceTries));
 
             _lastReport = DateTime.UtcNow;
             _frames = 0;
             _poses = 0;
             _faceFrames = 0;
             _faceFailures = 0;
+            _positionOnly = 0;
+            _roiNull = 0;
+            _faceTries = 0;
         }
 
         // MARK: esqueleto
@@ -245,6 +258,9 @@ namespace Simtrack.Kinect
                         found = candidate;
                         break;
                     }
+
+                    if (candidate.TrackingState == SkeletonTrackingState.PositionOnly)
+                        _positionOnly++;
                 }
 
                 if (found == null)
@@ -257,6 +273,8 @@ namespace Simtrack.Kinect
                 {
                     _skeleton = found;
                 }
+
+                _lastSkeletonAt = DateTime.UtcNow;
 
                 Joint head = found.Joints[JointType.Head];
 
@@ -339,8 +357,16 @@ namespace Simtrack.Kinect
                 skeleton = _skeleton;
             }
 
+            // Un esqueleto viejo no vale: si hace mas de 1,5 s que no se ve,
+            // se pasa al modo de region de profundidad.
+            if (skeleton != null && (DateTime.UtcNow - _lastSkeletonAt).TotalSeconds > 1.5)
+                skeleton = null;
+
             if (skeleton == null)
+            {
+                ProcessFaceByRegion();
                 return;
+            }
 
             try
             {
@@ -382,6 +408,118 @@ namespace Simtrack.Kinect
             }
         }
 
+        /// <summary>
+        /// Sin esqueleto (solo se ve del esternon para arriba) se localiza la
+        /// cabeza en la profundidad y se le pasa esa zona al FaceTracker.
+        /// </summary>
+        private static void ProcessFaceByRegion()
+        {
+            int width = 640;
+            int height = 480;
+
+            Rect? roi = ComputeHeadRegion(width, height);
+
+            if (roi == null)
+            {
+                _roiNull++;
+                return;
+            }
+
+            _faceTries++;
+
+            if ((DateTime.UtcNow - _lastRoiLog).TotalSeconds > 1.5)
+            {
+                _lastRoiLog = DateTime.UtcNow;
+                Console.WriteLine(string.Format("ROI cara x={0} y={1} w={2} h={3}", roi.Value.X, roi.Value.Y, roi.Value.Width, roi.Value.Height));
+            }
+
+            try
+            {
+                FaceTrackFrame frame = _faceTracker.Track(ColorFormat, _colorPixels, DepthFormat, _depthPixels, roi.Value);
+
+                if (frame == null)
+                {
+                    _faceFailures++;
+                    return;
+                }
+
+                using (frame)
+                {
+                    if (!frame.TrackSuccessful)
+                    {
+                        _faceFailures++;
+                        return;
+                    }
+
+                    _faceFrames++;
+                    _lastFaceOk = DateTime.UtcNow;
+
+                    Vector3DF rotation = frame.Rotation;
+                    Vector3DF translation = frame.Translation;
+
+                    double pitch = rotation.X * 180.0 / Math.PI;
+                    double yaw = rotation.Y * 180.0 / Math.PI;
+                    double roll = rotation.Z * 180.0 / Math.PI;
+
+                    SendPoseAt(translation.X * 100.0, translation.Y * 100.0, translation.Z * 100.0, yaw, pitch, roll);
+                }
+            }
+            catch (Exception)
+            {
+                _faceFailures++;
+                _lastFaceOk = DateTime.MinValue;
+            }
+        }
+
+        private static Rect? ComputeHeadRegion(int width, int height)
+        {
+            short[] depth = _depthPixels;
+
+            if (depth == null || depth.Length < width * height)
+                return null;
+
+            int minX = width, maxX = -1, minY = height, maxY = -1;
+
+            for (var y = 0; y < height; y += 2)
+            {
+                for (var x = 0; x < width; x += 2)
+                {
+                    int millimeters = depth[y * width + x] >> 3;
+
+                    if (millimeters < 450 || millimeters > 2600)
+                        continue;
+
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            if (maxX < 0 || maxY < 0)
+                return null;
+
+            int bodyWidth = maxX - minX;
+            int bodyHeight = maxY - minY;
+
+            if (bodyHeight < 40 || bodyWidth < 40)
+                return null;
+
+            int centerX = (minX + maxX) / 2;
+            int headWidth = Math.Max(90, (int)(bodyWidth * 0.55));
+            int headHeight = Math.Max(70, (int)(bodyHeight * 0.45));
+
+            int x0 = Math.Max(0, centerX - headWidth / 2);
+            int y0 = Math.Max(0, minY - 15);
+
+            headWidth = Math.Min(headWidth, width - x0);
+            headHeight = Math.Min(headHeight, height - y0);
+
+            if (headWidth < 40 || headHeight < 40)
+                return null;
+
+            return new Rect(x0, y0, headWidth, headHeight);
+        }
         private static void BoneRotation(Skeleton skeleton, out double yaw, out double pitch, out double roll)
         {
             yaw = 0;
@@ -429,6 +567,11 @@ namespace Simtrack.Kinect
 
         private static void SendPose(Joint head, double yaw, double pitch, double roll)
         {
+            SendPoseAt(head.Position.X * 100.0, head.Position.Y * 100.0, head.Position.Z * 100.0, yaw, pitch, roll);
+        }
+
+        private static void SendPoseAt(double x, double y, double z, double yaw, double pitch, double roll)
+        {
             // Primera pose = cero de rotacion (para que el juego arranque centrado).
             if (!_hasRotationBase)
             {
@@ -441,10 +584,6 @@ namespace Simtrack.Kinect
             double outYaw = Normalize(yaw - _baseYaw);
             double outPitch = Normalize(pitch - _basePitch);
             double outRoll = Normalize(roll - _baseRoll);
-
-            double x = head.Position.X * 100.0;
-            double y = head.Position.Y * 100.0;
-            double z = head.Position.Z * 100.0;
 
             // Sin cara fiable se usa el hueso, que ya viene relativo.
             if (_faceTracker == null || (DateTime.UtcNow - _lastFaceOk).TotalMilliseconds > 1000)
