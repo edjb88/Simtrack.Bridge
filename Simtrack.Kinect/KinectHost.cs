@@ -44,6 +44,9 @@ namespace Simtrack.Kinect
         private static long _positionOnly;
         private static long _roiNull;
         private static long _faceTries;
+        private static RgbHeadPose _rgb;
+        private static long _rgbFrames;
+        private static DateTime _lastRgbTry = DateTime.MinValue;
         private static DateTime _lastReport = DateTime.UtcNow;
         private static DateTime _lastPose = DateTime.MinValue;
         private static DateTime _lastFaceOk = DateTime.MinValue;
@@ -167,6 +170,25 @@ namespace Simtrack.Kinect
 
                 _sensor.ColorFrameReady += OnColorFrame;
                 _sensor.DepthFrameReady += OnDepthFrame;
+
+                string model = System.IO.Path.Combine(AppContext.BaseDirectory, "face_detection_yunet_2023mar.onnx");
+
+                if (System.IO.File.Exists(model))
+                {
+                    try
+                    {
+                        _rgb = new RgbHeadPose(model, 640, 480);
+                        Console.WriteLine("Head pose RGB: activado.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Head pose RGB no disponible: " + ex.Message);
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("Head pose RGB: falta el modelo " + model);
+                }
             }
 
             if (_snapshotPath != null && !_faceEnabled)
@@ -214,7 +236,7 @@ namespace Simtrack.Kinect
                 return;
 
             Console.WriteLine(string.Format(
-                "estado={0} frames={1} poses={2} cara={3} fallos={4} soloPos={6} roiNull={7} tries={8} ({5} Hz)",
+                "estado={0} poses={2} cara={3} fallos={4} rgb={9} ({5} Hz)",
                 _sensor == null ? "?" : _sensor.Status.ToString(),
                 _frames,
                 _poses,
@@ -223,7 +245,8 @@ namespace Simtrack.Kinect
                 (int)(_poses / seconds),
                 _positionOnly,
                 _roiNull,
-                _faceTries));
+                _faceTries,
+                _rgbFrames));
 
             _lastReport = DateTime.UtcNow;
             _frames = 0;
@@ -233,6 +256,7 @@ namespace Simtrack.Kinect
             _positionOnly = 0;
             _roiNull = 0;
             _faceTries = 0;
+            _rgbFrames = 0;
         }
 
         // MARK: esqueleto
@@ -308,6 +332,27 @@ namespace Simtrack.Kinect
 
                 frame.CopyPixelDataTo(_colorPixels);
                 _haveColor = true;
+
+                if (_rgb != null &&
+                    (DateTime.UtcNow - _lastSkeletonAt).TotalSeconds > 1.0 &&
+                    (DateTime.UtcNow - _lastRgbTry).TotalMilliseconds > 66)
+                {
+                    _lastRgbTry = DateTime.UtcNow;
+
+                    double rx, ry, rz, rYaw, rPitch, rRoll;
+
+                    try
+                    {
+                        if (_rgb.TryEstimate(_colorPixels, out rx, out ry, out rz, out rYaw, out rPitch, out rRoll))
+                        {
+                            _rgbFrames++;
+                            SendPoseAt(rx, ry, rz, rYaw, rPitch, rRoll, true);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
 
                 if (_snapshotPath != null && !_snapshotDone)
                     SaveColor(frame, _colorPixels);
@@ -430,7 +475,7 @@ namespace Simtrack.Kinect
             if ((DateTime.UtcNow - _lastRoiLog).TotalSeconds > 1.5)
             {
                 _lastRoiLog = DateTime.UtcNow;
-                Console.WriteLine(string.Format("ROI cara x={0} y={1} w={2} h={3}", roi.Value.X, roi.Value.Y, roi.Value.Width, roi.Value.Height));
+                Console.WriteLine(string.Format("ROI cara x={0} y={1} w={2} h={3}", roi.Value.Left, roi.Value.Top, roi.Value.Width, roi.Value.Height));
             }
 
             try
@@ -461,7 +506,7 @@ namespace Simtrack.Kinect
                     double yaw = rotation.Y * 180.0 / Math.PI;
                     double roll = rotation.Z * 180.0 / Math.PI;
 
-                    SendPoseAt(translation.X * 100.0, translation.Y * 100.0, translation.Z * 100.0, yaw, pitch, roll);
+                    SendPoseAt(translation.X * 100.0, translation.Y * 100.0, translation.Z * 100.0, yaw, pitch, roll, true);
                 }
             }
             catch (Exception)
@@ -518,7 +563,8 @@ namespace Simtrack.Kinect
             if (headWidth < 40 || headHeight < 40)
                 return null;
 
-            return new Rect(x0, y0, headWidth, headHeight);
+            // Kinect usa Rect(izquierda, arriba, derecha, abajo).
+            return new Rect(x0, y0, x0 + headWidth, y0 + headHeight);
         }
         private static void BoneRotation(Skeleton skeleton, out double yaw, out double pitch, out double roll)
         {
@@ -572,6 +618,11 @@ namespace Simtrack.Kinect
 
         private static void SendPoseAt(double x, double y, double z, double yaw, double pitch, double roll)
         {
+            SendPoseAt(x, y, z, yaw, pitch, roll, false);
+        }
+
+        private static void SendPoseAt(double x, double y, double z, double yaw, double pitch, double roll, bool absoluteRotation)
+        {
             // Primera pose = cero de rotacion (para que el juego arranque centrado).
             if (!_hasRotationBase)
             {
@@ -585,8 +636,9 @@ namespace Simtrack.Kinect
             double outPitch = Normalize(pitch - _basePitch);
             double outRoll = Normalize(roll - _baseRoll);
 
-            // Sin cara fiable se usa el hueso, que ya viene relativo.
-            if (_faceTracker == null || (DateTime.UtcNow - _lastFaceOk).TotalMilliseconds > 1000)
+            // La rotacion del hueso ya viene relativa; la de cara/RGB es
+            // absoluta y hay que restarle la referencia.
+            if (!absoluteRotation)
             {
                 outYaw = yaw;
                 outPitch = pitch;
