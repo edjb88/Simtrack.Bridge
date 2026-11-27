@@ -171,14 +171,16 @@ namespace Simtrack.Kinect
                 _sensor.ColorFrameReady += OnColorFrame;
                 _sensor.DepthFrameReady += OnDepthFrame;
 
-                string model = System.IO.Path.Combine(AppContext.BaseDirectory, "face_detection_yunet_2023mar.onnx");
 
-                if (System.IO.File.Exists(model))
+                string cascade = System.IO.Path.Combine(AppContext.BaseDirectory, "haarcascade_frontalface_default.xml");
+                string facemark = System.IO.Path.Combine(AppContext.BaseDirectory, "lbfmodel.yaml");
+
+                if (System.IO.File.Exists(cascade) && System.IO.File.Exists(facemark))
                 {
                     try
                     {
-                        _rgb = new RgbHeadPose(model, 640, 480);
-                        Console.WriteLine("Head pose RGB: activado.");
+                        _rgb = new RgbHeadPose(cascade, facemark, 640, 480);
+                        Console.WriteLine("Head pose RGB: activado (Haar + LBF).");
                     }
                     catch (Exception ex)
                     {
@@ -187,7 +189,7 @@ namespace Simtrack.Kinect
                 }
                 else
                 {
-                    Console.WriteLine("Head pose RGB: falta el modelo " + model);
+                    Console.WriteLine("Head pose RGB: faltan haarcascade_frontalface_default.xml o lbfmodel.yaml");
                 }
             }
 
@@ -346,7 +348,24 @@ namespace Simtrack.Kinect
                         if (_rgb.TryEstimate(_colorPixels, out rx, out ry, out rz, out rYaw, out rPitch, out rRoll))
                         {
                             _rgbFrames++;
-                            SendPoseAt(rx, ry, rz, rYaw, rPitch, rRoll, true);
+
+                            // Posicion a partir del centro de la cara y la
+                            // profundidad del Kinect (mas fiable que tvec).
+                            int px = (int)_rgb.LastCenterX;
+                            int py = (int)_rgb.LastCenterY;
+                            int depthMm = AverageDepth(px, py, 12);
+
+                            if (depthMm > 400 && depthMm < 4000)
+                            {
+                                double zcm = depthMm / 10.0;
+                                double xcm = (px - 320.0) * zcm / 533.0;
+                                double ycm = (py - 240.0) * zcm / 533.0;
+                                SendPoseAt(xcm, ycm, zcm, rYaw, rPitch, rRoll, true);
+                            }
+                            else
+                            {
+                                SendPoseAt(rx, ry, rz, rYaw, rPitch, rRoll, true);
+                            }
                         }
                     }
                     catch (Exception)
@@ -614,6 +633,34 @@ namespace Simtrack.Kinect
         private static void SendPose(Joint head, double yaw, double pitch, double roll)
         {
             SendPoseAt(head.Position.X * 100.0, head.Position.Y * 100.0, head.Position.Z * 100.0, yaw, pitch, roll);
+        }
+
+        private static int AverageDepth(int px, int py, int radius)
+        {
+            if (_depthPixels == null)
+                return 0;
+
+            long sum = 0;
+            int count = 0;
+
+            for (int y = py - radius; y <= py + radius; y++)
+            {
+                for (int x = px - radius; x <= px + radius; x++)
+                {
+                    if (x < 0 || y < 0 || x >= 640 || y >= 480)
+                        continue;
+
+                    int mm = _depthPixels[y * 640 + x] >> 3;
+
+                    if (mm > 400 && mm < 4000)
+                    {
+                        sum += mm;
+                        count++;
+                    }
+                }
+            }
+
+            return count == 0 ? 0 : (int)(sum / count);
         }
 
         private static void SendPoseAt(double x, double y, double z, double yaw, double pitch, double roll)

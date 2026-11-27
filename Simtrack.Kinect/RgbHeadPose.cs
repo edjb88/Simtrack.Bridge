@@ -1,39 +1,51 @@
 using System;
 using OpenCvSharp;
+using OpenCvSharp.Face;
 
 namespace Simtrack.Kinect
 {
     /// <summary>
-    /// Head pose a partir de la imagen RGB del Kinect, sin esqueleto.
-    /// Detector YuNet + solvePnP con 5 puntos (misma idea que KINECT2TIR).
+    /// Head pose a partir de imagen (RGB o infrarrojos del Kinect), sin esqueleto.
+    /// Haar + Facemark LBF (68 puntos) + solvePnP.
     /// </summary>
     internal sealed class RgbHeadPose : IDisposable
     {
-        private readonly FaceDetectorYN _detector;
+        private readonly CascadeClassifier _cascade;
+        private readonly FacemarkLBF _facemark;
         private readonly int _width;
         private readonly int _height;
         private readonly byte[] _bgr;
         private readonly double[,] _camera;
         private readonly double[] _distortion;
 
+        public static bool Debug;
+
+        public double LastCenterX { get; private set; }
+        public double LastCenterY { get; private set; }
+        public double LastFaceWidth { get; private set; }
+
+        // Convencion OpenCV: X derecha, Y abajo, Z hacia el fondo.
         private static readonly Point3f[] ModelPoints =
         {
-            new Point3f(-225f, 170f, -135f),
-            new Point3f(225f, 170f, -135f),
-            new Point3f(0f, 0f, 0f),
-            new Point3f(-150f, -150f, -125f),
-            new Point3f(150f, -150f, -125f)
+            new Point3f(0f, 0f, 0f),           // 30 nariz
+            new Point3f(-225f, -170f, 135f),   // 36 ojo
+            new Point3f(225f, -170f, 135f),    // 45 ojo
+            new Point3f(-150f, 150f, 125f),    // 48 boca
+            new Point3f(150f, 150f, 125f),     // 54 boca
+            new Point3f(0f, 330f, 65f)         // 8 barbilla
         };
 
-        public RgbHeadPose(string modelPath, int width, int height)
+        public RgbHeadPose(string cascadePath, string facemarkPath, int width, int height)
         {
             _width = width;
             _height = height;
             _bgr = new byte[width * height * 3];
 
-            _detector = FaceDetectorYN.Create(modelPath, string.Empty, new Size(width, height), 0.6f, 0.3f, 5000);
+            _cascade = new CascadeClassifier(cascadePath);
+            _facemark = FacemarkLBF.Create(new FacemarkLBF.Params());
+            _facemark.LoadModel(facemarkPath);
 
-            const double focal = 533.0; // ~62 grados horizontales en 640 px
+            const double focal = 533.0;
 
             _camera = new double[3, 3];
             _camera[0, 0] = focal;
@@ -69,7 +81,6 @@ namespace Simtrack.Kinect
             return TryEstimateBgr(_bgr, out x, out y, out z, out yaw, out pitch, out roll);
         }
 
-        /// <summary>Prueba con una imagen BGR ya preparada (util para depurar).</summary>
         public bool TryEstimateBgr(byte[] bgr, out double x, out double y, out double z, out double yaw, out double pitch, out double roll)
         {
             x = 0;
@@ -79,65 +90,134 @@ namespace Simtrack.Kinect
             pitch = 0;
             roll = 0;
 
-            // Se aclara la imagen: la habitacion suele estar oscura.
+            if (bgr == null || bgr.Length < _width * _height * 3)
+                return false;
+
             var boosted = new byte[bgr.Length];
 
             for (var i = 0; i < bgr.Length; i++)
                 boosted[i] = Boost(bgr[i]);
 
-            using (Mat image = Mat.FromPixelData(_height, _width, MatType.CV_8UC3, boosted))
-            using (var faces = new Mat())
+            using (var color = new Mat(_height, _width, MatType.CV_8UC3))
+            using (var gray = new Mat())
             {
-                _detector.Detect(image, faces);
+                System.Runtime.InteropServices.Marshal.Copy(boosted, 0, color.Data, boosted.Length);
+                Cv2.CvtColor(color, gray, ColorConversionCodes.BGR2GRAY);
+                Cv2.EqualizeHist(gray, gray);
 
-                if (faces.Empty() || faces.Rows < 1)
-                    return false;
-
-                // YuNet: x, y, w, h, ojo_der, ojo_izq, nariz, boca_der, boca_izq, score
-                byte[] raw = faces.ToBytes();
-
-                var imagePoints = new Point2f[5];
-                imagePoints[0] = new Point2f(FloatAt(raw, 4), FloatAt(raw, 5));
-                imagePoints[1] = new Point2f(FloatAt(raw, 6), FloatAt(raw, 7));
-                imagePoints[2] = new Point2f(FloatAt(raw, 8), FloatAt(raw, 9));
-                imagePoints[3] = new Point2f(FloatAt(raw, 10), FloatAt(raw, 11));
-                imagePoints[4] = new Point2f(FloatAt(raw, 12), FloatAt(raw, 13));
-
-                var rvec = new double[3];
-                var tvec = new double[3];
-
-                Cv2.SolvePnP(
-                    ModelPoints,
-                    imagePoints,
-                    _camera,
-                    _distortion,
-                    ref rvec,
-                    ref tvec,
-                    false,
-                    SolvePnPMethod.Iterative);
-
-                double[,] rotation = RodriguesToMatrix(rvec);
-
-                double r00 = rotation[0, 0];
-                double r10 = rotation[1, 0];
-                double r20 = rotation[2, 0];
-                double r21 = rotation[2, 1];
-                double r22 = rotation[2, 2];
-
-                pitch = Math.Asin(-Clamp(r20, -1.0, 1.0)) * 180.0 / Math.PI;
-                yaw = Math.Atan2(r10, r00) * 180.0 / Math.PI;
-                roll = Math.Atan2(r21, r22) * 180.0 / Math.PI;
-
-                // El modelo está en milímetros: se pasa a centímetros.
-                x = tvec[0] / 10.0;
-                y = tvec[1] / 10.0;
-                z = tvec[2] / 10.0;
-
-                return true;
+                return RunDetection(gray, out x, out y, out z, out yaw, out pitch, out roll);
             }
         }
 
-        /// <summary>Rodrigues de toda la vida, para no depender de la sobrecarga de OpenCV.</summary>
+        /// <summary>Igual pero con una imagen en gris (infrarrojos del Kinect).</summary>
+        public bool TryEstimateGray(byte[] gray8, out double x, out double y, out double z, out double yaw, out double pitch, out double roll)
+        {
+            x = 0;
+            y = 0;
+            z = 0;
+            yaw = 0;
+            pitch = 0;
+            roll = 0;
+
+            if (gray8 == null || gray8.Length < _width * _height)
+                return false;
+
+            using (var gray = new Mat(_height, _width, MatType.CV_8UC1))
+            {
+                System.Runtime.InteropServices.Marshal.Copy(gray8, 0, gray.Data, _width * _height);
+                Cv2.EqualizeHist(gray, gray);
+
+                return RunDetection(gray, out x, out y, out z, out yaw, out pitch, out roll);
+            }
+        }
+
+        private bool RunDetection(Mat gray, out double x, out double y, out double z, out double yaw, out double pitch, out double roll)
+        {
+            x = 0;
+            y = 0;
+            z = 0;
+            yaw = 0;
+            pitch = 0;
+            roll = 0;
+
+            Rect[] faces = _cascade.DetectMultiScale(
+                gray,
+                1.1,
+                3,
+                HaarDetectionTypes.ScaleImage,
+                new Size(40, 40));
+
+            if (Debug)
+                Console.WriteLine("Haar caras: " + (faces == null ? 0 : faces.Length));
+
+            if (faces == null || faces.Length == 0)
+                return false;
+
+            Rect face = faces[0];
+            LastCenterX = face.X + face.Width / 2.0;
+            LastCenterY = face.Y + face.Height / 2.0;
+            LastFaceWidth = face.Width;
+
+            Point2f[][] landmarks;
+            bool ok;
+
+            try
+            {
+                using (InputArray faceArray = InputArray.Create(faces, MatType.CV_32SC4))
+                {
+                    ok = _facemark.Fit(gray, faceArray, out landmarks);
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            if (!ok || landmarks == null || landmarks.Length == 0 || landmarks[0] == null || landmarks[0].Length < 68)
+                return false;
+
+            Point2f[] points = landmarks[0];
+
+            var imagePoints = new Point2f[6];
+            imagePoints[0] = points[30];
+            imagePoints[1] = points[36];
+            imagePoints[2] = points[45];
+            imagePoints[3] = points[48];
+            imagePoints[4] = points[54];
+            imagePoints[5] = points[8];
+
+            var rvec = new double[3];
+            var tvec = new double[3];
+
+            Cv2.SolvePnP(
+                ModelPoints,
+                imagePoints,
+                _camera,
+                _distortion,
+                ref rvec,
+                ref tvec,
+                false,
+                SolvePnPMethod.Iterative);
+
+            double[,] rotation = RodriguesToMatrix(rvec);
+
+            double r00 = rotation[0, 0];
+            double r02 = rotation[0, 2];
+            double r10 = rotation[1, 0];
+            double r12 = rotation[1, 2];
+            double r22 = rotation[2, 2];
+
+            yaw = Math.Atan2(r02, r22) * 180.0 / Math.PI;
+            pitch = Math.Asin(-Clamp(r12, -1.0, 1.0)) * 180.0 / Math.PI;
+            roll = Math.Atan2(r10, r00) * 180.0 / Math.PI;
+
+            x = tvec[0] / 10.0;
+            y = tvec[1] / 10.0;
+            z = tvec[2] / 10.0;
+
+            return true;
+        }
+
         private static double[,] RodriguesToMatrix(double[] rotationVector)
         {
             double rx = rotationVector[0];
@@ -147,9 +227,7 @@ namespace Simtrack.Kinect
             double theta = Math.Sqrt(rx * rx + ry * ry + rz * rz);
 
             if (theta < 1e-9)
-            {
                 return new double[,] { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
-            }
 
             double kx = rx / theta;
             double ky = ry / theta;
@@ -176,11 +254,6 @@ namespace Simtrack.Kinect
             return matrix;
         }
 
-        private static float FloatAt(byte[] raw, int index)
-        {
-            return BitConverter.ToSingle(raw, index * 4);
-        }
-
         private static byte Boost(byte value)
         {
             double normalized = value / 255.0;
@@ -199,7 +272,8 @@ namespace Simtrack.Kinect
 
         public void Dispose()
         {
-            _detector.Dispose();
+            _cascade.Dispose();
+            _facemark.Dispose();
         }
     }
 }

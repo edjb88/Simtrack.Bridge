@@ -328,9 +328,9 @@ public sealed class BridgeService : IDisposable
             }
 
             string logPath = Path.Combine(AppContext.BaseDirectory, "kinect.log");
-            // El Face Tracking de este Kinect de Xbox no llega a enganchar; se
-            // arranca sin el para no gastar CPU. Se puede probar con --face.
-            string arguments = "--quiet --no-face --log=" + (logPath.Contains(" ") ? "\"" + logPath + "\"" : logPath);
+            // Con Face Tracking + head pose RGB (Haar + LBF) el puente
+            // necesita los flujos de color y profundidad.
+            string arguments = "--quiet --log=" + (logPath.Contains(" ") ? "\"" + logPath + "\"" : logPath);
 
             _kinectProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, arguments)
             {

@@ -30,6 +30,8 @@ $openCvVersion = '4.13.0.20261107'
 $openCvDll = Join-Path $deps "extracted\opencvsharp4.$openCvVersion\lib\netstandard2.0\OpenCvSharp.dll"
 $openCvNative = Join-Path $deps "extracted\opencvsharp4.runtime.win.$openCvVersion\runtimes\win-x64\native\OpenCvSharpExtern.dll"
 $model = Join-Path $deps 'face_detection_yunet_2023mar.onnx'
+$haar = Join-Path $deps 'haarcascade_frontalface_default.xml'
+$facemark = Join-Path $deps 'lbfmodel.yaml'
 
 if (-not (Test-Path $kinectDll)) {
     throw 'No se encuentra Microsoft.Kinect.dll. Instala Kinect for Windows SDK v1.8.'
@@ -77,9 +79,9 @@ Copy-Item $openCvDll $outDir -Force
 
 # Dependencias de OpenCvSharp para .NET Framework
 $extraDlls = @(
-    (Join-Path $deps 'extracted\system.memory.4.6.3\lib\net462\System.Memory.dll'),
-    (Join-Path $deps 'extracted\system.buffers.4.6.0\lib\net462\System.Buffers.dll'),
-    (Join-Path $deps 'extracted\system.numerics.vectors.4.6.0\lib\net462\System.Numerics.Vectors.dll'),
+    (Join-Path $deps 'extracted\system.memory.4.6.3\lib\netstandard2.0\System.Memory.dll'),
+    (Join-Path $deps 'extracted\system.buffers.4.6.0\lib\netstandard2.0\System.Buffers.dll'),
+    (Join-Path $deps 'extracted\system.numerics.vectors.4.6.0\lib\netstandard2.0\System.Numerics.Vectors.dll'),
     (Join-Path $deps 'extracted\system.runtime.compilerservices.unsafe.6.1.2\lib\netstandard2.0\System.Runtime.CompilerServices.Unsafe.dll')
 )
 
@@ -100,12 +102,14 @@ else {
     Write-Host "Aviso: no se encuentra $openCvNative" -ForegroundColor Yellow
 }
 
-if (Test-Path $model) {
-    Copy-Item $model $outDir -Force
-    Write-Host 'Copiado el modelo YuNet'
-}
-else {
-    Write-Host "Aviso: no se encuentra el modelo $model" -ForegroundColor Yellow
+foreach ($extraModel in $haar, $facemark) {
+    if (Test-Path $extraModel) {
+        Copy-Item $extraModel $outDir -Force
+        Write-Host ("Copiado " + (Split-Path $extraModel -Leaf))
+    }
+    else {
+        Write-Host "Aviso: falta $extraModel" -ForegroundColor Yellow
+    }
 }
 
 # DLLs nativas del Face Tracking.
